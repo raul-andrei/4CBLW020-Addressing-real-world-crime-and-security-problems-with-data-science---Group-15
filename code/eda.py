@@ -5,7 +5,8 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 
-OUTPUT_DIR = Path("output")
+ROOT = Path(__file__).parent.parent
+OUTPUT_DIR = ROOT / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 sns.set_theme(style="whitegrid")
@@ -17,7 +18,7 @@ def save_fig(name: str, dpi: int = 150) -> None:
 
 
 # ── Data loading ───────────────────────────────────────────────────────────────
-path = Path("data/london_crime_full.parquet")
+path = ROOT / "data" / "london_crime_full.parquet"
 df = pd.read_parquet(path)
 
 cat_cols = ["Crime type", "Reported by", "Falls within", "Last outcome category", "LSOA code", "LSOA name"]
