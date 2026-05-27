@@ -6,53 +6,47 @@ import os
 # Paths
 BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-PANEL_PATH = os.path.join(BASE, "data", "cleaned_data", "panels", "london_panel.parquet")
-OUTPUT_PATH = os.path.join(BASE, "output", "results", "prophet_baseline_results.csv")
+PANEL_PATH = os.path.join(BASE, "data", "cleaned_data", "panels", "london_panel_borough.parquet")
+OUTPUT_PATH = os.path.join(BASE, "output", "results", "prophet_baseline_borough_results.csv")
 
-
-# Settings 
+# Settings
 TARGET_CRIME = "Violence and sexual offences"
 TRAIN_END = "2024-12-01"
 TEST_START = "2025-01-01"
-N_LSOAS = 300 
 
 # Load data
 print("Loading panel...")
 con = duckdb.connect()
 
-
 df = con.execute(f"""
-    SELECT lsoa_code, month, crime_count
+    SELECT borough, month, crime_count
     FROM read_parquet('{PANEL_PATH}')
     WHERE crime_type = '{TARGET_CRIME}'
-    ORDER BY lsoa_code, month
+    ORDER BY borough, month
 """).df()
-
 
 con.close()
 
 print(f"Loaded {len(df):,} rows for '{TARGET_CRIME}'")
 
-# Get list of LSOAs
-lsoas = df["lsoa_code"].unique()
-if N_LSOAS:
-    lsoas = lsoas[:N_LSOAS]
-print(f"Running Prophet on {len(lsoas)} LSOAs...")
+# Get list of boroughs
+boroughs = df["borough"].unique()
+print(f"Running Prophet on {len(boroughs)} boroughs...")
 
-# Run Prophet per LSOA
+# Run Prophet per borough
 results = []
 
-for i, lsoa in enumerate(lsoas):
-    lsoa_df = df[df["lsoa_code"] == lsoa].copy()
-    lsoa_df = lsoa_df.rename(columns={"month": "ds", "crime_count": "y"})
-    lsoa_df["ds"] = pd.to_datetime(lsoa_df["ds"])
+for i, borough in enumerate(boroughs):
+    borough_df = df[df["borough"] == borough].copy()
+    borough_df = borough_df.rename(columns={"month": "ds", "crime_count": "y"})
+    borough_df["ds"] = pd.to_datetime(borough_df["ds"])
 
     # Split train/test
-    train = lsoa_df[lsoa_df["ds"] <= TRAIN_END]
-    test = lsoa_df[lsoa_df["ds"] >= TEST_START]
+    train = borough_df[borough_df["ds"] <= TRAIN_END]
+    test = borough_df[borough_df["ds"] >= TEST_START]
 
     if len(train) < 24 or len(test) == 0:
-        continue  # skip LSOAs with not enough data
+        continue
 
     # Fit model
     model = Prophet(yearly_seasonality=True, weekly_seasonality=False,
@@ -72,41 +66,36 @@ for i, lsoa in enumerate(lsoas):
     rmse = ((merged["yhat"] - merged["y"]) ** 2).mean() ** 0.5
     mape = ((merged["yhat"] - merged["y"]).abs() / merged["y"].replace(0, float("nan"))).mean() * 100
 
-
     results.append({
-        "lsoa_code": lsoa,
-        "mae": round(mae, 3),
-        "rmse": round(rmse, 3),
-        "mape": round(mape, 3),
-        "n_test": len(merged)
+        "borough":  borough,
+        "mae":      round(mae, 3),
+        "rmse":     round(rmse, 3),
+        "mape":     round(mape, 3),
+        "n_test":   len(merged)
     })
 
     if (i + 1) % 5 == 0:
-        print(f"  {i+1}/{len(lsoas)} done...")
+        print(f"  {i+1}/{len(boroughs)} done...")
 
-# Save results 
+# Save results
 results_df = pd.DataFrame(results)
 results_df.to_csv(OUTPUT_PATH, index=False)
 
 # Summary
-results_df = pd.DataFrame(results)
-print(f"\nDone! {len(results_df)} LSOAs processed")
-print(f"Average MAE: {results_df['mae'].mean():.2f}")
+print(f"\nDone! {len(results_df)} boroughs processed")
+print(f"Average MAE:  {results_df['mae'].mean():.2f}")
 print(f"Average RMSE: {results_df['rmse'].mean():.2f}")
 print(f"Average MAPE: {results_df['mape'].mean():.2f}%")
 print(f"Results saved to {OUTPUT_PATH}")
 
 # Save summary
-
-# Lsoa level
-summary_path = os.path.join(BASE, "output", "results", "model_comparison.csv")
-
+summary_path = os.path.join(BASE, "output", "results", "model_comparison_borough.csv")
 summary = pd.DataFrame([{
-    "model": "baseline",
-    "avg_mae": round(results_df["mae"].mean(), 3),
-    "avg_rmse": round(results_df["rmse"].mean(), 3),
-    "avg_mape": round(results_df["mape"].mean(), 3),
-    "n_lsoas": len(results_df)
+    "model":      "baseline",
+    "avg_mae":    round(results_df["mae"].mean(), 3),
+    "avg_rmse":   round(results_df["rmse"].mean(), 3),
+    "avg_mape":   round(results_df["mape"].mean(), 3),
+    "n_boroughs": len(results_df)
 }])
 summary.to_csv(summary_path, index=False)
 print(f"Summary saved to {summary_path}")

@@ -8,7 +8,7 @@ OUTPUT_PATH = os.path.join(BASE, "data", "cleaned_data", "panels", "london_panel
 
 os.makedirs("output", exist_ok=True)
 
-# ── Build panel ────────────────────────────────────────────────────────────────
+# Build panel
 print("Building London panel...")
 
 con = duckdb.connect()
@@ -37,7 +37,7 @@ con.close()
 
 print(f"Done! Panel saved to {OUTPUT_PATH}")
 
-# ── Quick check ────────────────────────────────────────────────────────────────
+# Quick check
 con = duckdb.connect()
 result = con.execute(f"""
     SELECT 
@@ -50,7 +50,7 @@ result = con.execute(f"""
 """).fetchone()
 con.close()
 
-print(f"Total rows:    {result[0]:,}")
-print(f"LSOAs:         {result[1]:,}")
-print(f"Crime types:   {result[2]}")
-print(f"Date range:    {result[3]} → {result[4]}")
+print(f"Total rows: {result[0]:,}")
+print(f"LSOAs: {result[1]:,}")
+print(f"Crime types: {result[2]}")
+print(f"Date range: {result[3]} → {result[4]}")
