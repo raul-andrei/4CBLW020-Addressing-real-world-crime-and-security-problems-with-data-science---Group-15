@@ -26,25 +26,27 @@ MEASURE_LABELS = {
 }
 
 
-def add_rank_column(df, score, ascending=False):
+def add_rank_column(df, score, ascending=False, group_col='config_id'):
     df = df.copy()
-    df[f'{score}_rank'] = df.groupby('config_id')[score].rank(ascending=ascending, method='min')
+    df[f'{score}_rank'] = df.groupby(group_col)[score].rank(ascending=ascending, method='min')
     return df
 
 
-def mean_rank_across_brokerage_measures(df):
-    """Returns a Series indexed by crime_type with mean rank across the 3 brokerage measures."""
+def mean_rank_across_brokerage_measures(df, group_col='config_id'):
+    """Mean rank across the 3 brokerage measures.
+    Ranks within each value of group_col (e.g. config_id, or force)."""
     rank_cols = []
     for m, asc in BROKERAGE_MEASURES:
-        df = add_rank_column(df, m, ascending=asc)
+        df = add_rank_column(df, m, ascending=asc, group_col=group_col)
         rank_cols.append(f'{m}_rank')
     return df.groupby('crime_type')[rank_cols].mean().mean(axis=1)
 
-def mean_centrality_rank(df):
+
+def mean_centrality_rank(df, group_col='config_id'):
     """Mean rank across all 4 centrality measures (incl. eigenvector)."""
     rank_cols = []
     for m, asc in ALL_CENTRALITY_MEASURES:
-        df = add_rank_column(df, m, ascending=asc)
+        df = add_rank_column(df, m, ascending=asc, group_col=group_col)
         rank_cols.append(f'{m}_rank')
     return df.groupby('crime_type')[rank_cols].mean().mean(axis=1)
 
@@ -93,7 +95,6 @@ def make_figure_1(coocc_df, corr_df):
         fig.savefig(path, dpi=300, bbox_inches='tight')
         print(f'Saved: {path}')
     plt.close(fig)
-
 
 
 # ── Figure 2 ─────────────────────────────────────────────────────────────────
@@ -149,35 +150,35 @@ def make_figure_2(cooc_df, corr_df):
 
 def make_figure_3(cooc_df, corr_df):
     headline_crimes = ['Robbery', 'Theft from the person', 'Possession of weapons']
-    
+
     df = cooc_df.copy()
     df['covid_included'] = df['covid_included'].astype(str)
     df['ASB_included'] = df['ASB_included'].astype(str)
-    
+
     for m, asc in BROKERAGE_MEASURES:
         df = add_rank_column(df, m, ascending=asc)
     rank_cols = [f'{m}_rank' for m, _ in BROKERAGE_MEASURES]
     df['mean_rank'] = df[rank_cols].mean(axis=1)
-    
+
     sensitivity_axes = [
         ('presence_threshold', [2, 3, 5], 'Presence threshold'),
         ('time_frame', sorted(cooc_df['time_frame'].unique()), 'Time window'),
         ('covid_included', ['True', 'False'], 'COVID years'),
         ('ASB_included', ['True', 'False'], 'ASB included'),
     ]
-    
+
     fig, axes = plt.subplots(1, 3, figsize=(16, 6), sharey=True)
-    
+
     for ax, crime in zip(axes, headline_crimes):
         crime_df = df[df['crime_type'] == crime]
         overall = crime_df['mean_rank'].mean()
-        
+
         rows = []
         for axis_name, levels, axis_label in sensitivity_axes:
             for level in levels:
                 level_mean = crime_df[crime_df[axis_name].astype(str) == str(level)]['mean_rank'].mean()
                 rows.append((f'{axis_label}={level}', level_mean))
-        
+
         labels, values = zip(*rows)
         y = np.arange(len(labels))
         ax.barh(y, values, color='steelblue', alpha=0.8)
@@ -187,10 +188,10 @@ def make_figure_3(cooc_df, corr_df):
         ax.set_xlabel('Mean rank (lower = stronger broker)')
         ax.set_title(crime, fontsize=11)
         ax.legend(loc='lower right', fontsize=8)
-    
+
     fig.suptitle('Sensitivity of headline-broker rankings across configuration axes', fontsize=13)
     plt.tight_layout()
-    
+
     for ext in ('png', 'pdf'):
         path = FIGURES_DIR / f'fig3_broker_sensitivity.{ext}'
         fig.savefig(path, dpi=300, bbox_inches='tight')
@@ -243,7 +244,116 @@ def make_figure_4(cooc_df, corr_df):
     plt.close(g.fig)
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# ── Per-force figures ────────────────────────────────────────────────────────
+
+def _add_force_ranks(df, measures=BROKERAGE_MEASURES):
+    """Rank crimes within each force by each measure, and compute mean rank."""
+    df = df.copy()
+    rank_cols = []
+    for m, asc in measures:
+        df[f'{m}_rank'] = df.groupby('force')[m].rank(ascending=asc, method='min')
+        rank_cols.append(f'{m}_rank')
+    df['mean_rank'] = df[rank_cols].mean(axis=1)
+    return df
+
+
+def make_figure_5_per_force_top_brokers(force_df, top_n=3):
+    """How often each crime type appears as a top-N broker across forces."""
+    df = _add_force_ranks(force_df)
+
+    top = (df.sort_values(['force', 'mean_rank'])
+             .groupby('force')
+             .head(top_n)
+             [['force', 'crime_type', 'mean_rank']])
+
+    n_forces = df['force'].nunique()
+    freq = (top.groupby('crime_type').size()
+              .rename('n_forces')
+              .reset_index())
+    freq['pct_forces'] = (freq['n_forces'] / n_forces * 100).round(1)
+    freq = freq.sort_values('pct_forces', ascending=False).reset_index(drop=True)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    y = np.arange(len(freq))
+    ax.barh(y, freq['pct_forces'], color='steelblue', edgecolor='black')
+    ax.set_yticks(y)
+    ax.set_yticklabels(freq['crime_type'])
+    ax.invert_yaxis()
+    ax.set_xlabel(f'% of forces where crime is a top-{top_n} broker')
+    ax.set_title(
+        f'Top-{top_n} broker frequency across {n_forces} police forces\n'
+        f'(co-occurrence network, lift, presence threshold = 3, kNN k = 3)'
+    )
+    ax.set_xlim(0, 105)
+    for i, (n, pct) in enumerate(zip(freq['n_forces'], freq['pct_forces'])):
+        ax.text(pct + 1, i, f'{int(n)}/{n_forces} ({pct}%)',
+                va='center', fontsize=9)
+    plt.tight_layout()
+
+    for ext in ('png', 'pdf'):
+        path = FIGURES_DIR / f'fig5_per_force_top_brokers.{ext}'
+        fig.savefig(path, dpi=300, bbox_inches='tight')
+        print(f'Saved: {path}')
+    plt.close(fig)
+
+    return top, freq
+
+
+def make_figure_6_per_force_heatmap(force_df):
+    """Force × crime mean-rank heatmap with row clustering."""
+    df = _add_force_ranks(force_df)
+    matrix = df.pivot(index='force', columns='crime_type', values='mean_rank')
+
+    # Diagnose missing data
+    n_forces_before = len(matrix)
+    n_crimes_before = matrix.shape[1]
+
+    # Drop crime columns that are missing in too many forces (>20%)
+    col_nan_pct = matrix.isna().mean(axis=0)
+    matrix = matrix.loc[:, col_nan_pct < 0.2]
+
+    # Drop forces still missing any crime in the remaining columns
+    matrix = matrix.dropna(axis=0, how='any')
+
+    print(f"  After cleaning: {len(matrix)}/{n_forces_before} forces, "
+          f"{matrix.shape[1]}/{n_crimes_before} crime types")
+
+    if len(matrix) < 3:
+        print("  Too few forces remain after cleaning; skipping heatmap.")
+        return matrix, []
+
+    g = sns.clustermap(
+        matrix,
+        cmap='YlOrRd_r',
+        row_cluster=True,
+        col_cluster=False,
+        figsize=(14, 16),
+        annot=True,
+        fmt='.1f',
+        annot_kws={'size': 7},
+        cbar_kws={'label': 'Mean broker rank (lower = more central)'},
+        linewidths=0.3,
+        linecolor='white',
+    )
+    g.ax_heatmap.set_xlabel('')
+    g.ax_heatmap.set_ylabel('Police force')
+    g.fig.suptitle(
+        'Brokerage rank by crime type across police forces\n'
+        '(co-occurrence network, lift, presence threshold = 3, kNN k = 3)',
+        y=1.01, fontsize=13,
+    )
+    plt.setp(g.ax_heatmap.get_xticklabels(), rotation=40, ha='right')
+
+    for ext in ('png', 'pdf'):
+        path = FIGURES_DIR / f'fig6_per_force_heatmap.{ext}'
+        g.savefig(path, dpi=300, bbox_inches='tight')
+        print(f'Saved: {path}')
+    plt.close(g.fig)
+
+    clustered_force_order = matrix.index[g.dendrogram_row.reordered_ind].tolist()
+    return matrix, clustered_force_order
+
+# ── Entry point ──────────────────────────────────────────────────────────────
 
 def main():
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
@@ -252,6 +362,20 @@ def main():
     cooc_df = pd.read_csv(DATA_DIR / 'sensitivity_results_per_crime_cooccurrence.csv')
     corr_df = pd.read_csv(DATA_DIR / 'sensitivity_results_per_crime_correlation.csv')
     print(f"Co-occurrence: {cooc_df.shape}, Correlation: {corr_df.shape}")
+
+    cooc_t3 = cooc_df[cooc_df['presence_threshold'] == 3].copy()
+    corr_sp = corr_df[
+        (corr_df['correlation_method'] == 'spearman') &
+        (corr_df['normalisation'] == 'proportions')
+    ].copy()
+    mean_scores = pd.DataFrame({
+        'mean_brokerage_rank_cooccurrence': mean_rank_across_brokerage_measures(cooc_t3),
+        'mean_brokerage_rank_correlation': mean_rank_across_brokerage_measures(corr_sp),
+    })
+    mean_scores.index.name = 'crime_type'
+    out_path = DATA_DIR / 'mean_brokerage_scores.csv'
+    mean_scores.to_csv(out_path)
+    print(f"Saved mean brokerage scores: {out_path}")
 
     print("\nGenerating Figure 1...")
     make_figure_1(cooc_df, corr_df)
@@ -264,6 +388,27 @@ def main():
 
     print("\nGenerating Figure 4...")
     make_figure_4(cooc_df, corr_df)
+
+    # Per-force figures, only if data is present
+    force_path = DATA_DIR / 'per_force_brokerage.csv'
+    if force_path.exists():
+        print("\nLoading per-force data...")
+        force_df = pd.read_csv(force_path)
+        print(f"Per-force: {force_df.shape}, {force_df['force'].nunique()} forces")
+
+        print("\nGenerating Figure 5...")
+        top, freq = make_figure_5_per_force_top_brokers(force_df, top_n=3)
+        print("\nBroker frequency across forces:")
+        print(freq.to_string(index=False))
+
+        print("\nGenerating Figure 6...")
+        matrix, clustered_order = make_figure_6_per_force_heatmap(force_df)
+        print("\nClustered force order (top to bottom in heatmap):")
+        for f in clustered_order:
+            print(f"  {f}")
+    else:
+        print(f"\nNo per-force data at {force_path}, skipping figures 5–6.")
+        print("Run the per-force sensitivity analysis first to produce that file.")
 
     print("\nAll figures saved.")
 

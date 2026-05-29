@@ -1,4 +1,5 @@
 import itertools
+import duckdb
 import numpy as np
 import pandas as pd
 import networkx as nx
@@ -347,9 +348,100 @@ def run_sensitivity_per_crime():
     pd.DataFrame(cooc_results).to_csv(OUTPUT_PER_CRIME_COOC, index=False)
     print(f"\nCo-occurrence done. {len(cooc_results)} rows saved to {OUTPUT_PER_CRIME_COOC}")
 
+def run_primary_brokerage_analysis(where_sql=None, con: duckdb.DuckDBPyConnection = None) -> pd.DataFrame | None:
+    """
+    Run brokerage analysis under the primary specification:
+      - Co-occurrence network (lift)
+      - Presence threshold = 3
+      - kNN backbone k = 3
+    
+    Parameters
+    ----------
+    where_sql : str, optional
+        SQL filter for restricting the data (e.g. by time, force, region).
+        Passed through to build_cooccurrence_network. If None, uses all data.
+    
+    Returns
+    -------
+    pd.DataFrame
+        One row per crime type with columns: crime_type, betweenness,
+        current_flow_betweenness, constraint, eigenvector, community_id, degree.
+    """
+    try:
+        cooc = build_cooccurrence_network(
+            con,
+            presence_threshold=3,
+            where_sql=where_sql,
+        )
+        G_sim = knn_backbone(create_graph(cooc, matrix='cooccurrence'), k=3)
+        G_dist = to_distance_graph(G_sim)
+        per_node = brokerage_analysis(G_sim, G_dist)
+    except Exception as e:
+        print(f"Error in run_primary_brokerage_analysis: {e}")
+        per_node = {}
+    rows = [
+        {'crime_type': crime, **metrics}
+        for crime, metrics in per_node.items()
+    ]
+    return pd.DataFrame(rows) if rows else None
 
-# ---------- main loop ----------
+def run_brokerage_per_force():
+    """For each police force, run the per-crime co-occurrence analysis using
+    the primary specification (lift, threshold=3, kNN k=3, ASB included,
+    full time period). Outputs one row per (force, crime_type)."""
+    con = connect()
+    
+    forces = con.execute("""
+        SELECT DISTINCT reported_by 
+        FROM crimes 
+        WHERE reported_by IS NOT NULL
+        ORDER BY reported_by
+    """).df()['reported_by'].tolist()
+    
+    print(f"Running per-force analysis for {len(forces)} forces\n")
+    
+    results = pd.DataFrame()
+    for i, force in enumerate(forces, 1):
+        # Escape single quotes for SQL safety
+        force_sql = force.replace("'", "''")
+        where_sql = f"year BETWEEN 2017 AND 2026 AND reported_by = '{force_sql}'"
+        
+        n_rows = con.execute(
+            f"SELECT COUNT(*) FROM crimes WHERE {where_sql}"
+        ).fetchone()[0]
+        
+        print(f"[{i}/{len(forces)}] {force}: {n_rows:,} rows")
+        
+        if n_rows < 10000:
+            print(f"  -> skipping, too few rows")
+            continue
+        
+        res = run_primary_brokerage_analysis(where_sql=where_sql, con=con)
+        if res is None or res.empty:
+            print(f"  -> no valid graph could be built, skipping")
+            continue
+        
+        res['force'] = force
+        res['n_rows_used'] = n_rows
+
+        results = pd.concat([results, res], ignore_index=True)
+
+    con.close()
+    out = results
+    out_path = Path(__file__).parent / 'per_force_brokerage.csv'
+    out.to_csv(out_path, index=False)
+    print(f"\nDone. {len(out)} rows saved to {out_path}")
+    return out
+
 
 if __name__ == "__main__":
     # network_sensibility_test()
-    run_sensitivity_per_crime()
+    
+    out_path = Path(__file__).parent / 'global_brokerage.csv'
+    con = connect()
+    where_sql = "year BETWEEN 2017 AND 2026"
+    df = run_primary_brokerage_analysis(where_sql=where_sql, con=con)
+    con.close()
+    if df is not None:
+        df.to_csv(out_path, index=False)
+        print(f"Global brokerage analysis done. {len(df)} rows saved to {out_path}")
