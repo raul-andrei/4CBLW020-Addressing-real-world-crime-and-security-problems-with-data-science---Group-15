@@ -4,6 +4,8 @@ import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
 import numpy as np
+import json ## for the UK Map 
+from pathlib import Path
 
 app = Dash(__name__, suppress_callback_exceptions=True)
 
@@ -16,6 +18,149 @@ TEXT_SEC = "#7a82a0"
 TEXT_MUTE = "#3d4460"
 WARNING = "#ffb84f"
 SUCCESS = "#4fff9f"
+
+## Making the UK Map (Loading fake data)
+import random
+BASE_DIR = Path(__file__).resolve().parent
+LSOA_PATH = BASE_DIR / "data" / "lsoa_boundaries.geojson"
+
+with open(LSOA_PATH, "r", encoding="utf-8") as f:
+    LSOA_GEOJSON = json.load(f)
+
+def extract_lsoa_base(geojson):
+    rows = []
+
+    for feature in geojson["features"]:
+        props = feature["properties"]
+
+        # adjust these names if your GeoJSON uses different property names
+        code = props.get("LSOA21CD") or props.get("LSOA11CD")
+        name = props.get("LSOA21NM") or props.get("LSOA11NM") or code
+
+        if code:
+            rows.append({
+                "lsoa_code": code,
+                "lsoa_name": name
+            })
+
+    return pd.DataFrame(rows)
+
+def make_fake_lsoa_data(geojson):
+    df = extract_lsoa_base(geojson)
+
+    np.random.seed(42)
+    random.seed(42)
+
+    crime_pool = [
+        "Robbery",
+        "Drug Offences",
+        "Anti-social Behaviour",
+        "Bicycle Theft",
+        "Shoplifting",
+        "Burglary",
+        "Public Order",
+        "Violence"
+    ]
+
+    df["brokerage_score"] = np.random.randint(20, 96, size=len(df))
+
+    def score_to_risk(score):
+        if score >= 80:
+            return "High"
+        elif score >= 60:
+            return "Medium"
+        else:
+            return "Low"
+
+    def score_to_action(score):
+        if score >= 80:
+            return "+2 patrol units · Focused evening patrol"
+        elif score >= 60:
+            return "+1 patrol unit · Increased monitoring"
+        else:
+            return "Routine patrol"
+
+    def score_to_units(score):
+        if score >= 80:
+            return 6
+        elif score >= 60:
+            return 4
+        else:
+            return 2
+
+    df["risk_level"] = df["brokerage_score"].apply(score_to_risk)
+    df["suggested_action"] = df["brokerage_score"].apply(score_to_action)
+    df["recommended_units"] = df["brokerage_score"].apply(score_to_units)
+    df["brokerage_crimes"] = [
+        ", ".join(random.sample(crime_pool, 3)) for _ in range(len(df))
+    ]
+    df["predicted_risk"] = df["risk_level"].map({
+        "High": "High probability of violent escalation in next 14 days",
+        "Medium": "Moderate escalation risk in next 14 days",
+        "Low": "Low short-term escalation risk"
+    })
+
+    return df
+
+LSOA_DF = make_fake_lsoa_data(LSOA_GEOJSON)
+
+## Making actual map 
+def make_lsoa_map():
+    fig = px.choropleth_mapbox(
+        LSOA_DF,
+        geojson=LSOA_GEOJSON,
+        locations="lsoa_code",
+        featureidkey="properties.LSOA21CD",   # change if needed
+        color="brokerage_score",
+        hover_name="lsoa_name",
+        hover_data={
+            "lsoa_code": True,
+            "brokerage_score": True,
+            "risk_level": True,
+            "brokerage_crimes": False,
+            "predicted_risk": False,
+            "suggested_action": False,
+            "recommended_units": False
+        },
+        color_continuous_scale=[
+            [0.0, "#f5f5f5"],
+            [0.35, "#ffd166"],
+            [0.65, "#ff8c42"],
+            [1.0, "#ff4f4f"]
+        ],
+        mapbox_style="carto-darkmatter",
+        zoom=5.1,
+        center={"lat": 54.5, "lon": -2.5},
+        opacity=0.65
+    )
+
+    fig.update_traces(
+        marker_line_width=0.3,
+        marker_line_color=BORDER,
+        customdata=np.stack([
+            LSOA_DF["lsoa_code"],
+            LSOA_DF["lsoa_name"],
+            LSOA_DF["brokerage_score"],
+            LSOA_DF["risk_level"],
+            LSOA_DF["brokerage_crimes"],
+            LSOA_DF["predicted_risk"],
+            LSOA_DF["suggested_action"],
+            LSOA_DF["recommended_units"]
+        ], axis=-1)
+    )
+
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=0, r=0, t=0, b=0),
+        coloraxis_colorbar=dict(
+            title="Brokerage score",
+            thickness=10,
+            tickfont=dict(color=TEXT_SEC)
+        )
+    )
+
+    return fig
 
 PLOTLY_LAYOUT = dict(
     paper_bgcolor="rgba(0,0,0,0)",
@@ -73,20 +218,6 @@ def make_crime_distribution(force):
     counts = (weights * 500_000).astype(int)
     return pd.DataFrame({"crime": CRIME_TYPES, "count": counts}).sort_values("count", ascending=True)
 
-def make_heatmap():
-    np.random.seed(42)
-    months_labels = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-    crimes_shown = ["Anti-social behaviour","Bicycle theft","Burglary",
-                     "Robbery","Shoplifting","Violence and sexual offences"]
-    data = np.array([
-        [0.70,0.75,0.86,0.96,1.00,0.97,0.99,0.96,0.84,0.85,0.75,0.67],
-        [0.58,0.60,0.70,0.75,0.89,0.95,1.00,0.97,0.97,0.97,0.78,0.54],
-        [0.97,0.94,0.98,0.90,0.91,0.90,0.91,0.93,0.92,1.00,1.00,0.94],
-        [0.90,0.85,0.91,0.86,0.92,0.93,0.96,0.94,0.94,1.00,0.98,0.91],
-        [0.92,0.91,0.98,0.93,0.96,0.93,0.96,0.99,0.95,1.00,0.96,0.84],
-        [0.88,0.81,0.92,0.87,0.96,0.96,1.00,0.94,0.91,0.94,0.90,0.88],
-    ])
-    return crimes_shown, months_labels, data
 
 # Sidebar
 def sidebar():
@@ -103,100 +234,83 @@ def sidebar():
     ])
 
 # Overview page
+# Overview page
 def overview_page():
-    crimes_shown, months_labels, heatmap_data = make_heatmap()
-
-    heatmap_fig = go.Figure(go.Heatmap(
-        z=heatmap_data, x=months_labels, y=crimes_shown,
-        colorscale=[[0, "#1e2640"], [0.5, ACCENT], [1, "#ff4f4f"]],
-        showscale=True,
-        colorbar=dict(thickness=8, len=0.8, tickfont=dict(size=9, color=TEXT_SEC),
-                      tickcolor=BORDER, outlinecolor="rgba(0,0,0,0)"),
-        hovertemplate="<b>%{y}</b><br>%{x}: %{z:.2f}<extra></extra>",
-    ))
-    heatmap_fig.update_layout(**PLOTLY_LAYOUT, height=240)
-    heatmap_fig.update_yaxes(tickfont=dict(size=10), gridcolor="rgba(0,0,0,0)")
-    heatmap_fig.update_xaxes(tickfont=dict(size=10))
-
-    broker_bars = html.Div(className="broker-list", children=[
-        html.Div(className="broker-item", children=[
-            html.Div(f"#{i+1}", className="broker-rank"),
-            html.Div(name, className="broker-name"),
-            html.Div(className="broker-bar-wrap", children=[
-                html.Div(className="broker-bar",
-                         style={"width": f"{score/0.280*100:.0f}%"})
-            ]),
-            html.Div(f"{score:.3f}", className="broker-score"),
-        ]) for i, (name, score) in enumerate(BROKERS)
-    ])
 
     return html.Div([
         html.Div(className="page-header", children=[
             html.Div("Overview", className="page-tag"),
-            html.Div("UK Crime & Policing Dashboard", className="page-title"),
-            html.Div("50M+ records · 44 forces · Feb 2017 – Jan 2026 · 14 crime categories",
+            html.Div("Brokerage Crime Intelligence System", className="page-title"),
+            html.Div("Turning brokerage crime patterns into actionable resource allocation decisions",
                      className="page-subtitle"),
         ]),
 
-        # Stat cards
-        html.Div(className="stat-grid", children=[
-            html.Div(className="stat-card", children=[
-                html.Div("Crime Records", className="stat-label"),
-                html.Div("50M+", className="stat-value"),
-                html.Div("After cleaning & deduplication", className="stat-sub"),
-            ]),
-            html.Div(className="stat-card", children=[
-                html.Div("Police Forces", className="stat-label"),
-                html.Div("44", className="stat-value"),
-                html.Div("England, Wales & BTP", className="stat-sub"),
-            ]),
-            html.Div(className="stat-card", children=[
-                html.Div("Time Span", className="stat-label"),
-                html.Div("9 yrs", className="stat-value"),
-                html.Div("Feb 2017 – Jan 2026", className="stat-sub"),
-            ]),
-            html.Div(className="stat-card", children=[
-                html.Div("Crime Categories", className="stat-label"),
-                html.Div("14", className="stat-value"),
-                html.Div("As defined by data.police.uk", className="stat-sub"),
-            ]),
-        ]),
-
-        # Charts row
-        html.Div(className="chart-grid-3", children=[
+        # Map + selected LSOA details row
+        html.Div(className="chart-grid", children=[
             html.Div(className="card", children=[
                 html.Div(className="card-header", children=[
                     html.Div([
-                        html.Div("Seasonality Heatmap", className="card-title"),
-                        html.Div("Normalised monthly activity · excl. COVID 2020–21",
-                                 className="card-subtitle"),
+                        html.Div("Brokerage Risk Map", className="card-title"),
+                        html.Div("UK LSOAs coloured by brokerage-risk score", className="card-subtitle"),
                     ]),
-                    html.Div("Real data", className="card-badge"),
+                    html.Div("Sample data", className="card-badge warning"),
                 ]),
-                dcc.Graph(figure=heatmap_fig, config={"displayModeBar": False},
-                          style={"height": "240px"}),
+                dcc.Graph(
+                    id="lsoa-map",
+                    figure=make_lsoa_map(),
+                    config={"displayModeBar": False},
+                    style={"height": "520px"}
+                ),
             ]),
 
             html.Div(className="card", children=[
                 html.Div(className="card-header", children=[
                     html.Div([
-                        html.Div("Top Brokerage Crimes", className="card-title"),
-                        html.Div("Betweenness centrality scores", className="card-subtitle"),
-                    ]),
-                    html.Div("Network results", className="card-badge"),
+                        html.Div("Selected LSOA", className="card-title"),
+                        html.Div("Click an area on the map for details", className="card-subtitle"),
+                    ])
                 ]),
-                broker_bars,
+                html.Div(
+                    id="lsoa-details",
+                    style={
+                        "padding": "16px",
+                        "color": TEXT_PRI,
+                        "fontFamily": "DM Mono, monospace",
+                        "fontSize": "14px"
+                    },
+                    children="Click an LSOA to view brokerage details."
+                )
             ]),
         ]),
+
+        # Leaderboard row
+        html.Div(className="card", style={"marginTop": "24px"}, children=[
+            html.Div(className="card-header", children=[
+                html.Div([
+                    html.Div("Highest Risk LSOAs", className="card-title"),
+                    html.Div("Top areas ranked by brokerage-risk score", className="card-subtitle"),
+                ]),
+                html.Div("Sample data", className="card-badge warning"),
+            ]),
+            make_lsoa_leaderboard(10)
+        ])
     ])
 
 # Force Explorer page
-def explorer_page():
+def brokerage_network_page():
+    return placeholder_page(
+        "Brokerage Network",
+        "Network",
+        "Content TBD · network analysis output"
+    )
+
+## General trends page 
+def general_trends_page():
     return html.Div([
         html.Div(className="page-header", children=[
-            html.Div("Explorer", className="page-tag"),
-            html.Div("Force Explorer", className="page-title"),
-            html.Div("Drill into crime trends by police force", className="page-subtitle"),
+            html.Div("Trends", className="page-tag"),
+            html.Div("General Trends", className="page-title"),
+            html.Div("Explore general crime trends by police force", className="page-subtitle"),
         ]),
 
         html.Div(className="force-selector", children=[
@@ -206,8 +320,12 @@ def explorer_page():
                 options=[{"label": f, "value": f} for f in FORCES],
                 value="London",
                 clearable=False,
-                style={"background": BG_CARD, "border": f"1px solid {BORDER}",
-                       "color": TEXT_PRI, "borderRadius": "8px"}
+                style={
+                    "background": BG_CARD,
+                    "border": f"1px solid {BORDER}",
+                    "color": TEXT_PRI,
+                    "borderRadius": "8px"
+                }
             ),
         ]),
 
@@ -220,8 +338,11 @@ def explorer_page():
                     ]),
                     html.Div("Sample data", className="card-badge warning"),
                 ]),
-                dcc.Graph(id="time-series-chart", config={"displayModeBar": False},
-                          style={"height": "280px"}),
+                dcc.Graph(
+                    id="time-series-chart",
+                    config={"displayModeBar": False},
+                    style={"height": "280px"}
+                ),
             ]),
 
             html.Div(className="card", children=[
@@ -232,10 +353,33 @@ def explorer_page():
                     ]),
                     html.Div("Sample data", className="card-badge warning"),
                 ]),
-                dcc.Graph(id="crime-dist-chart", config={"displayModeBar": False},
-                          style={"height": "280px"}),
+                dcc.Graph(
+                    id="crime-dist-chart",
+                    config={"displayModeBar": False},
+                    style={"height": "280px"}
+                ),
             ]),
         ]),
+    ])
+
+
+## Leaderboard function (Areas with highest brokerage scores)
+def make_lsoa_leaderboard(n=10):
+    top_lsoas = LSOA_DF.sort_values("brokerage_score", ascending=False).head(n)
+
+    return html.Div(className="broker-list", children=[
+        html.Div(className="broker-item", children=[
+            html.Div(f"#{i+1}", className="broker-rank"),
+            html.Div(row["lsoa_name"], className="broker-name"),
+            html.Div(className="broker-bar-wrap", children=[
+                html.Div(
+                    className="broker-bar",
+                    style={"width": f"{row['brokerage_score']}%"}
+                )
+            ]),
+            html.Div(str(row["brokerage_score"]), className="broker-score"),
+        ])
+        for i, (_, row) in enumerate(top_lsoas.iterrows())
     ])
 
 # Placeholder pages
@@ -263,14 +407,13 @@ app.layout = html.Div(className="dashboard-wrapper", children=[
 # Routing
 @app.callback(Output("page-content", "children"), Input("url", "pathname"))
 def render_page(path):
-    if path == "/explorer":
-        return explorer_page()
-    elif path == "/brokers":
-        return placeholder_page("Brokerage Analysis", "Network",
-                                "Coming soon · awaiting network analysis output")
+    if path == "/brokerage-network":
+        return brokerage_network_page()
     elif path == "/forecast":
         return placeholder_page("Crime Forecast", "Forecast",
                                 "Coming soon · Prophet models in progress")
+    elif path == "/general-trends":
+        return general_trends_page()
     elif path == "/allocation":
         return placeholder_page("Resource Allocation", "Allocation",
                                 "Coming soon · awaiting forecast results")
@@ -322,10 +465,10 @@ def update_explorer(force):
 def update_nav(path):
     pages = [
         ("/", "Overview"),
-        ("/explorer", "Force Explorer"),
-        ("/brokers", "Brokerage Analysis"),
+        ("/brokerage-network", "Brokerage Network"),
         ("/forecast", "Forecast"),
         ("/allocation", "Resource Allocation"),
+        ("/general-trends", "General Trends")
     ]
     return [
         dcc.Link(
@@ -335,6 +478,31 @@ def update_nav(path):
         )
         for href, label in pages
     ]
+
+@app.callback(
+    Output("lsoa-details", "children"),
+    Input("lsoa-map", "clickData")
+)
+def update_lsoa_details(clickData):
+    if not clickData:
+        return html.Div([
+            html.Div("No LSOA selected", style={"fontWeight": "bold", "marginBottom": "10px"}),
+            html.Div("Click an area on the map to view brokerage details.")
+        ])
+
+    point = clickData["points"][0]
+    lsoa_code, lsoa_name, score, risk_level, crimes, predicted_risk, action, units = point["customdata"]
+
+    return html.Div([
+        html.Div(lsoa_name, style={"fontSize": "18px", "fontWeight": "bold", "marginBottom": "12px"}),
+        html.Div(f"LSOA code: {lsoa_code}", style={"marginBottom": "8px"}),
+        html.Div(f"Brokerage score: {score}", style={"marginBottom": "8px"}),
+        html.Div(f"Risk level: {risk_level}", style={"marginBottom": "8px"}),
+        html.Div(f"Identified brokerage crimes: {crimes}", style={"marginBottom": "8px"}),
+        html.Div(f"Predicted risk: {predicted_risk}", style={"marginBottom": "8px"}),
+        html.Div(f"Suggested action: {action}", style={"marginBottom": "8px"}),
+        html.Div(f"Recommended units: {units}", style={"marginBottom": "8px"}),
+    ])
 
 if __name__ == "__main__":
     app.run(debug=True)
