@@ -50,7 +50,6 @@ except ImportError:  # optional dependency; fall back to a no-op wrapper
 
 from code.new_models_test.build_panel import (  # noqa: E402
     TARGET,
-    BROKERS,
     build_ward_panel,
     add_date_columns,
     select_top_wards,
@@ -60,7 +59,7 @@ from code.new_models_test.build_panel import (  # noqa: E402
 )
 
 # ============================ CONFIG (edit me) ===============================
-N_WARDS = 100                  # int, or "all"
+N_WARDS = "all"               # int, or "all"
 SPLIT_DATE = "2024-01-01"     # last TRAIN month (inclusive); test = the month after, onward
 FAST_MODE = False              # True = fit-once demo; False = expanding-window refit
 SCORE_START_YEAR = 2017       # brokerage weights are fit on [START .. SPLIT year]
@@ -71,7 +70,7 @@ PRED_PATH = OUTPUT_DIR / "predictions.csv"
 PER_WARD_PATH = OUTPUT_DIR / "per_ward_metrics.csv"
 SUMMARY_PATH = OUTPUT_DIR / "summary_metrics.csv"
 
-# avg_betweenness AND rank_safe weights are fit on the TRAINING window only.
+# rank_safe weights are fit on the TRAINING window only.
 # Use an exact MONTH cutoff (not just the split year): if SPLIT_DATE falls
 # mid-year, the later months of that year are in the TEST set and must not leak
 # into the weights. period = year*12 + (month_num-1), matching scores.py.
@@ -82,15 +81,10 @@ SCORE_WHERE_SQL = (
 )
 
 # variant_name -> list of regressor columns (already lag-1, already known at t)
-#   score    : your continuous current-flow-betweenness, proportion-weighted
-#   brokers  : the 3 raw broker counts (Prophet learns the weights)
-#   rank_his : Raul's rank-weighted activity, his ORIGINAL all-data weights (leaky)
-#   rank_safe: same construction, weights recomputed on the train window (no leak)
+#   baseline  : Prophet, trend + yearly seasonality only
+#   rank_safe : rank-weighted activity, weights recomputed on the train window (no leak)
 VARIANTS: dict[str, list[str]] = {
     "baseline": [],
-    "score": [lag_name("avg_betweenness")],
-    "brokers": [lag_name(b) for b in BROKERS],
-    "rank_his": [lag_name("rank_activity")],
     "rank_safe": [lag_name("rank_activity_safe")],
 }
 # ============================================================================

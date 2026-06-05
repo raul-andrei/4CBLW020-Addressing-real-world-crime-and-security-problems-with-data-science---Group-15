@@ -52,9 +52,11 @@ RANK_BROKERAGE_SCORES = {
 }
 
 # Source columns that get shifted +1 month within each ward.
+#   TARGET             -> V&SO's own count, lagged -> the autoregressive term used
+#                         by the `ar*` variants (control for the ward's own momentum)
 #   rank_activity      -> colleague's ORIGINAL hard-coded weights (all-data -> leaky)
 #   rank_activity_safe -> leakage-safe rank weights recomputed on the train window
-LAG_SOURCE_COLS = BROKERS + ["avg_betweenness", "rank_activity", "rank_activity_safe"]
+LAG_SOURCE_COLS = [TARGET] + BROKERS + ["avg_betweenness", "rank_activity", "rank_activity_safe"]
 
 
 def lag_name(col: str) -> str:

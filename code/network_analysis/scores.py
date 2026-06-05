@@ -149,23 +149,7 @@ def calculate_average_betweenness(score_where_sql: str | None = None,
     return df
 
 if __name__ == "__main__":
-    df = get_crime_data()
-    df = aggregate_lsoas_to_wards(df)
 
-    # Diagnostics
-    print(f"Ward-month-crime rows: {len(df)}")
-
-    bc_scores = load_scores(DATA / 'global_brokerage.csv')
-    bc_normalised = log_normalize(bc_scores)
-
-    # Warn on unmapped crime types
-    crimes_in_data = set(df['crime_type'].unique())
-    crimes_in_scores = set(bc_normalised.keys())
-    missing = crimes_in_data - crimes_in_scores
-    if missing:
-        print(f"Crime types with no brokerage score (will be excluded): {missing}")
-        df = df[df['crime_type'].isin(crimes_in_scores)]
-
-    df = calculate_brokerage_scores(df, bc_normalised)
+    df = calculate_average_betweenness(score_where_sql="year BETWEEN 2017 AND 2026")
     print(df.head(15))
     print(f"\nAvg betweenness range: [{df['avg_betweenness'].min():.3f}, {df['avg_betweenness'].max():.3f}]")
