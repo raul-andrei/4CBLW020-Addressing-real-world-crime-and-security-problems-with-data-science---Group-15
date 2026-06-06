@@ -194,6 +194,22 @@ def select_top_wards(panel: pd.DataFrame, n_wards) -> tuple[pd.DataFrame, list[s
     return panel[panel["WD21CD"].isin(selected)].copy(), selected
 
 
+def select_random_wards(panel: pd.DataFrame, n_wards, seed: int = 42) -> tuple[pd.DataFrame, list[str]]:
+    """Keep a RANDOM sample of `n_wards` wards (or 'all').
+
+    A random sample is more representative than top-N-by-V&SO (which is biased
+    toward high-volume wards), so it supports a general "improves forecasts across
+    wards" claim. `seed` makes the draw reproducible.
+    """
+    all_wards = panel["WD21CD"].drop_duplicates()
+    if isinstance(n_wards, str) and n_wards.lower() == "all":
+        selected = all_wards.tolist()
+    else:
+        n = min(int(n_wards), len(all_wards))
+        selected = all_wards.sample(n=n, random_state=seed).tolist()
+    return panel[panel["WD21CD"].isin(selected)].copy(), selected
+
+
 def add_lagged_regressors(panel: pd.DataFrame) -> pd.DataFrame:
     """Shift the regressor columns +1 month *within each ward*.
 

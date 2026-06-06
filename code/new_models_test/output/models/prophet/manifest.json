@@ -1,0 +1,28 @@
+{
+  "model": "prophet",
+  "weights": {
+    "Anti-social behaviour": 1.5,
+    "Bicycle theft": 7.0,
+    "Burglary": 1.5,
+    "Criminal damage and arson": 3.0,
+    "Drugs": 4.5,
+    "Other theft": 1.0,
+    "Possession of weapons": 8.75,
+    "Public order": 2.0,
+    "Robbery": 8.25,
+    "Shoplifting": 2.0,
+    "Theft from the person": 10.0,
+    "Vehicle crime": 1.0,
+    "Violence and sexual offences": 1.5
+  },
+  "reg_name": "rank_lag1",
+  "weights_sql": "year BETWEEN 2017 AND 2026",
+  "cutoff": "2026-01-01",
+  "next_ds": "2026-02-01",
+  "features": [
+    "rank_lag1"
+  ],
+  "n_models": {
+    "rank_safe": 7830
+  }
+}
