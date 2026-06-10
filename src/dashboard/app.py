@@ -51,8 +51,8 @@ def extract_lsoa_base(geojson):
 
         if code:
             rows.append({
-                "lsoa_code": code,
-                "lsoa_name": name
+                "ward_code": code,
+                "ward_name": name
             })
 
     return pd.DataFrame(rows)
@@ -100,7 +100,7 @@ FORCE_WARD_BOUNDARIES = ward_boundaries_by_force(WARD_FORCE_MAPPING, WARD_GEOJSO
 EMPTY_FEATURE_COLLECTION = {"type": "FeatureCollection", "features": []}
 
 def make_fake_lsoa_data(geojson):
-    df = extract_lsoa_base(geojson)
+    df = extract_ward_base(geojson)
 
     np.random.seed(42)
     random.seed(42)
@@ -170,15 +170,15 @@ WARD_DF = pd.read_parquet(WARD_SNAPSHOT)
 ## Making actual map - lsoa based map, keeping it here just for a moment,
 ## Delete later
 def make_lsoa_map():
-    fig = px.choropleth_mapbox(
+    fig = px.choropleth_map(
         LSOA_DF,
         geojson=LSOA_GEOJSON,
-        locations="lsoa_code",
-        featureidkey="properties.LSOA21CD",   # change if needed
+        locations="ward_code",
+        featureidkey="properties.WD21CD",
         color="brokerage_score",
-        hover_name="lsoa_name",
+        hover_name="ward_name",
         hover_data={
-            "lsoa_code": True,
+            "ward_code": True,
             "brokerage_score": True,
             "risk_level": True,
             "brokerage_crimes": False,
@@ -192,7 +192,7 @@ def make_lsoa_map():
             [0.65, "#ff8c42"],
             [1.0, "#ff4f4f"]
         ],
-        mapbox_style="carto-darkmatter",
+        map_style="carto-darkmatter",
         zoom=5.1,
         center={"lat": 54.5, "lon": -2.5},
         opacity=0.65
@@ -202,8 +202,8 @@ def make_lsoa_map():
         marker_line_width=0.3,
         marker_line_color=BORDER,
         customdata=np.stack([
-            LSOA_DF["lsoa_code"],
-            LSOA_DF["lsoa_name"],
+            LSOA_DF["ward_code"],
+            LSOA_DF["ward_name"],
             LSOA_DF["brokerage_score"],
             LSOA_DF["risk_level"],
             LSOA_DF["brokerage_crimes"],
@@ -410,7 +410,7 @@ def overview_page():
                 html.Div(className="card-header", children=[
                     html.Div([
                         html.Div("Brokerage Risk Map", className="card-title"),
-                        html.Div("UK LSOAs coloured by brokerage-risk score", className="card-subtitle"),
+                        html.Div("UK wards coloured by brokerage-risk score", className="card-subtitle"),
                     ]),
                     html.Div("Sample data", className="card-badge warning"),
                 ]),
@@ -446,6 +446,7 @@ def overview_page():
         html.Div(className="card", style={"marginTop": "24px"}, children=[
             html.Div(className="card-header", children=[
                 html.Div([
+                    html.Div("Highest Risk wards", className="card-title"),
                     html.Div("Highest Risk wards", className="card-title"),
                     html.Div("Top areas ranked by brokerage-risk score", className="card-subtitle"),
                 ]),
@@ -664,7 +665,7 @@ def make_lsoa_leaderboard(n=10):
     return html.Div(className="broker-list", children=[
         html.Div(className="broker-item", children=[
             html.Div(f"#{i+1}", className="broker-rank"),
-            html.Div(row["lsoa_name"], className="broker-name"),
+            html.Div(row["ward_name"], className="broker-name"),
             html.Div(className="broker-bar-wrap", children=[
                 html.Div(
                     className="broker-bar",
@@ -816,11 +817,12 @@ def update_lsoa_details(clickData):
     if not clickData:
         return html.Div([
             html.Div("No ward selected", style={"fontWeight": "bold", "marginBottom": "10px"}),
+            html.Div("No ward selected", style={"fontWeight": "bold", "marginBottom": "10px"}),
             html.Div("Click an area on the map to view brokerage details.")
         ])
 
     point = clickData["points"][0]
-    lsoa_code, lsoa_name, score, risk_level, crimes, predicted_risk, action, units = point["customdata"]
+    ward_code, ward_name, score, risk_level, crimes, predicted_risk, action, units = point["customdata"]
 
     return html.Div([
         html.Div(lsoa_name, style={"fontSize": "18px", "fontWeight": "bold", "marginBottom": "12px"}),
