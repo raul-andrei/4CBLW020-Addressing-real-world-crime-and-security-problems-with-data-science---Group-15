@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from code.network_analysis.preparation import connect
+import pyarrow
 
 ROOT = Path(__file__).parent.parent.parent
 DATA = ROOT / 'data'
@@ -169,3 +170,6 @@ if __name__ == "__main__":
     df = calculate_brokerage_scores(df, bc_normalised)
     print(df.head(15))
     print(f"\nAvg betweenness range: [{df['avg_betweenness'].min():.3f}, {df['avg_betweenness'].max():.3f}]")
+
+    # save the dataframe for future usage
+    df.to_parquet("ward_brokerage_scores.parquet", index=False)

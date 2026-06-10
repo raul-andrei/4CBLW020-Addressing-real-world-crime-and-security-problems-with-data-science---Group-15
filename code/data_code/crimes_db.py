@@ -3,7 +3,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
 DB_PATH = ROOT / "data" / "crimes.db"
-PARQUET_GLOB = ROOT / "data" /"*.parquet"
+PARQUET_GLOB = ROOT / "data" / "*.parquet"
 
 DB_PATH.unlink(missing_ok=True)
 conn = duckdb.connect(database=DB_PATH, read_only=False)
