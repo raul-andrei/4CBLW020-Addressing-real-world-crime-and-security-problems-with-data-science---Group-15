@@ -74,7 +74,7 @@ data/uk_raw_data/
 ### Step 2 — Clean and split by force
 
 ```bash
-python code/data_code/clean_by_force.py
+python src/data_code/clean_by_force.py
 ```
 
 Output: `data/cleaned_data/by_force_cleaned/*.parquet`
@@ -82,7 +82,7 @@ Output: `data/cleaned_data/by_force_cleaned/*.parquet`
 ### Step 3 — Build the UK panel
 
 ```bash
-python code/models_final/build_panel_uk.py
+python src/models_final/build_panel_uk.py
 ```
 
 Output: `data/cleaned_data/panels/uk_panel.parquet`
