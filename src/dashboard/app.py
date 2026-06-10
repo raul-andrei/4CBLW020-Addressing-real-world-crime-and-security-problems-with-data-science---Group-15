@@ -825,8 +825,8 @@ def update_lsoa_details(clickData):
     ward_code, ward_name, score, risk_level, crimes, predicted_risk, action, units = point["customdata"]
 
     return html.Div([
-        html.Div(lsoa_name, style={"fontSize": "18px", "fontWeight": "bold", "marginBottom": "12px"}),
-        html.Div(f"Ward code: {lsoa_code}", style={"marginBottom": "8px"}),
+        html.Div(ward_name, style={"fontSize": "18px", "fontWeight": "bold", "marginBottom": "12px"}),
+        html.Div(f"Ward code: {ward_code}", style={"marginBottom": "8px"}),
         html.Div(f"Brokerage score: {score}", style={"marginBottom": "8px"}),
         html.Div(f"Risk level: {risk_level}", style={"marginBottom": "8px"}),
         html.Div(f"Identified brokerage crimes: {crimes}", style={"marginBottom": "8px"}),
