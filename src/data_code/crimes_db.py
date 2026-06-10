@@ -1,7 +1,7 @@
 import duckdb
 from pathlib import Path
 
-ROOT = Path(__file__).parent.parent
+ROOT = Path(__file__).parent.parent.parent
 DB_PATH = ROOT / "data" / "crimes.db"
 PARQUET_GLOB = ROOT / "data" / "*.parquet"
 
