@@ -317,6 +317,7 @@ def build_forecast_snapshot(use_prophet: bool = True):
     # A ward with no row in the cutoff month had zero V&SO that month.
     df["vso_last_month"] = df["vso_last_month"].fillna(0)
     df["forecast_vso_change"] = df["forecast_vso"] - df["vso_last_month"]
+    
     df["model"] = model
     df["forecast_month"] = next_ds.date().isoformat()
 
@@ -333,7 +334,7 @@ def build_ward_force_mapping():
     forces = con.execute(sql).df()
     con.close()
 
-    lsoa_ward_mapping = pd.read_csv(DATA / "lsoa_ward_mapping.csv", usecols=['LSOA11CD', 'WD21CD'])  # lsoa_code -> ward_code
+    lsoa_ward_mapping = pd.read_csv(DATA / "lsoa_ward_mapping.csv", sep=';', usecols=['LSOA11CD', 'WD21CD'])  # lsoa_code -> ward_code
     merged = forces.merge(lsoa_ward_mapping, left_on='lsoa_code', right_on='LSOA11CD') 
 
     ward_forces = (
@@ -348,8 +349,8 @@ def build_ward_force_mapping():
 
 
 if __name__ == "__main__":
-    #make_network()
-    #build_ward_snapshot()
+    make_network()
+    build_ward_snapshot()
     build_forecast_snapshot(use_prophet=True)
     build_ward_force_mapping()
     print("artifacts built")

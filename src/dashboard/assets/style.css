@@ -444,4 +444,22 @@ body {
     width: 35%;
     font-family: var(--font-mono);
     font-size: 13px;
+    color: var(--text-primary);
+
+}
+
+.policeforce-dropdown input,
+.policeforce-dropdown [class*="value"],
+.policeforce-dropdown [class*="placeholder"] {
+    color: var(--text-primary) !important;
+}
+
+.sidebar-disclaimer {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-bright);
+    font-style: italic;
+    color: var(--text-secondary);
+    font-size: 11px;
+    line-height: 1.5;
 }

@@ -52,7 +52,7 @@ def aggregate_lsoas_to_wards(df_lsoas: pd.DataFrame) -> pd.DataFrame:
     """
 
     # First Load the csv files with mappings between LSOAS and wards:
-    df_ward = pd.read_csv(DATA / 'lsoa_ward_mapping.csv', usecols=['LSOA11CD', 'WD21CD'])
+    df_ward = pd.read_csv(DATA / 'lsoa_ward_mapping.csv', sep=';', usecols=['LSOA11CD', 'WD21CD'])
 
     # Now merge the LSOA-level data with the ward mapping:
     df_lsoas = df_lsoas.merge(df_ward, left_on='lsoa_code', right_on='LSOA11CD', how='left')

@@ -25,17 +25,17 @@ SUCCESS = "#4fff9f"
 import random
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DASHBOARD_ASSETS = BASE_DIR / "src" / "dashboard" / "assets"
-LSOA_PATH = BASE_DIR / "data" / "lsoa_boundaries.geojson"
+#LSOA_PATH = BASE_DIR / "data" / "lsoa_boundaries.geojson"
 WARD_PATH = BASE_DIR / "data" / "wards_dec2021_uk_bgc_4326.geojson"
 
-with open(LSOA_PATH, "r", encoding="utf-8") as f:
-    LSOA_GEOJSON = json.load(f)
+#with open(LSOA_PATH, "r", encoding="utf-8") as f:
+#    LSOA_GEOJSON = json.load(f)
 
 with open(WARD_PATH, "r", encoding="utf-8") as f:
     WARD_GEOJSON = json.load(f)
 
 
-BROKERAGE_NETWORK = plotly.io.read_json(DASHBOARD_ASSETS / "brokerage_network.json")
+BROKERAGE_NETWORK = plotly.io.read_json(DASHBOARD_ASSETS / "brokerage_network.json", skip_invalid=True)
 FORECASTS = pd.read_parquet(DASHBOARD_ASSETS / "forecast_snapshot.parquet")
 WARD_FORCE_MAPPING = pd.read_parquet(DASHBOARD_ASSETS / "ward_force_mapping.parquet")
 
@@ -156,8 +156,6 @@ def make_fake_lsoa_data(geojson):
 
     return df
 
-LSOA_DF = make_fake_lsoa_data(LSOA_GEOJSON)
-
 # Per-ward brokerage snapshot, precomputed once by
 # src/dashboard/artifacts.py (build_ward_snapshot) so the dashboard doesn't run
 # the 49M-row pipeline at boot. Regenerate after a data refresh.
@@ -169,62 +167,6 @@ if not WARD_SNAPSHOT.exists():
 WARD_DF = pd.read_parquet(WARD_SNAPSHOT)
 ## Making actual map - lsoa based map, keeping it here just for a moment,
 ## Delete later
-def make_lsoa_map():
-    fig = px.choropleth_map(
-        LSOA_DF,
-        geojson=LSOA_GEOJSON,
-        locations="ward_code",
-        featureidkey="properties.WD21CD",
-        color="brokerage_score",
-        hover_name="ward_name",
-        hover_data={
-            "ward_code": True,
-            "brokerage_score": True,
-            "risk_level": True,
-            "brokerage_crimes": False,
-            "predicted_risk": False,
-            "suggested_action": False,
-            "recommended_units": False
-        },
-        color_continuous_scale=[
-            [0.0, "#f5f5f5"],
-            [0.35, "#ffd166"],
-            [0.65, "#ff8c42"],
-            [1.0, "#ff4f4f"]
-        ],
-        map_style="carto-darkmatter",
-        zoom=5.1,
-        center={"lat": 54.5, "lon": -2.5},
-        opacity=0.65
-    )
-
-    fig.update_traces(
-        marker_line_width=0.3,
-        marker_line_color=BORDER,
-        customdata=np.stack([
-            LSOA_DF["ward_code"],
-            LSOA_DF["ward_name"],
-            LSOA_DF["brokerage_score"],
-            LSOA_DF["risk_level"],
-            LSOA_DF["brokerage_crimes"],
-            LSOA_DF["predicted_risk"],
-            LSOA_DF["suggested_action"],
-            LSOA_DF["recommended_units"]
-        ], axis=-1)
-    )
-
-    fig.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=0, r=0, t=0, b=0),
-        coloraxis_colorbar=dict(
-            title="Brokerage score",
-            thickness=10,
-            tickfont=dict(color=TEXT_SEC)
-        )
-    )
-
-    return fig
 
 def make_ward_map():
     fig = px.choropleth_map(
@@ -387,8 +329,10 @@ def sidebar():
         html.Div(className="sidebar-label", children="Navigation"),
         html.Div(id="sidebar-nav"),
         html.Div(className="sidebar-footer", children=[
-            html.Div("Group 15 · MD-CBL 2025–26"),
             html.Div("Data: data.police.uk"),
+            html.Div("All outputs are decision-support tools only. Final allocation decisions remain with police officers.", 
+                     className="sidebar-disclaimer")
+
         ])
     ])
 
@@ -412,7 +356,6 @@ def overview_page():
                         html.Div("Brokerage Risk Map", className="card-title"),
                         html.Div("UK wards coloured by brokerage-risk score", className="card-subtitle"),
                     ]),
-                    html.Div("Sample data", className="card-badge warning"),
                 ]),
                 dcc.Graph(
                     id="lsoa-map",
@@ -447,10 +390,8 @@ def overview_page():
             html.Div(className="card-header", children=[
                 html.Div([
                     html.Div("Highest Risk wards", className="card-title"),
-                    html.Div("Highest Risk wards", className="card-title"),
                     html.Div("Top areas ranked by brokerage-risk score", className="card-subtitle"),
                 ]),
-                html.Div("Sample data", className="card-badge warning"),
             ]),
             make_ward_leaderboard(10)
         ])
@@ -599,6 +540,137 @@ def forecast_page():
     ],
     className="forecast-main") #empty for now
 
+
+## Resource allocation page
+def compute_allocation(police_force, min_pct=0.1, max_pct=20.0):
+    df = _merge_forcast_with_mapping(FORECASTS, WARD_FORCE_MAPPING)
+    df = df[df["police_force"] == police_force].copy()
+
+    total = df["forecast_vso"].sum()
+    if total == 0:
+        df["allocation_pct"] = 0.0
+        return df
+
+    df["allocation_pct"] = (df["forecast_vso"] / total * 100).round(2)
+    df["allocation_pct"] = df["allocation_pct"].where(df["allocation_pct"] >= min_pct, 0.0)
+    df["allocation_pct"] = df["allocation_pct"].clip(upper=max_pct)
+
+    return df
+
+
+def allocation_map(police_force="Metropolitan Police Service"):
+    df = compute_allocation(police_force)
+    force_specific = FORCE_WARD_BOUNDARIES.get(police_force, EMPTY_FEATURE_COLLECTION)
+    center, zoom = _force_map_view(force_specific, df["ward_code"])
+
+    fig = px.choropleth_map(
+        data_frame=df,
+        geojson=force_specific,
+        locations="ward_code",
+        featureidkey="properties.WD21CD",
+        color="allocation_pct",
+        hover_name="ward_name",
+        hover_data={
+            "ward_code": True,
+            "allocation_pct": ":.2f",
+        },
+        labels={
+            "ward_code": "Ward code",
+            "allocation_pct": "Allocation (%)",
+        },
+        color_continuous_scale=[
+            [0.0, "#111520"],
+            [0.01, "#2a3f80"],
+            [0.5, ACCENT],
+            [1.0, "#ff4f4f"]
+        ],
+        map_style="carto-darkmatter",
+        zoom=zoom,
+        center=center,
+        opacity=0.65
+    )
+    fig.update_traces(marker_line_width=0.3, marker_line_color=BORDER)
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=0, r=0, t=0, b=0),
+        uirevision=police_force,
+        coloraxis_colorbar=dict(
+            title="Allocation (%)",
+            thickness=10,
+            tickfont=dict(color=TEXT_SEC)
+        )
+    )
+    return fig
+
+
+def allocation_leaderboard(police_force="Metropolitan Police Service", n=10):
+    df = compute_allocation(police_force)
+    top = df[df["allocation_pct"] > 0].sort_values("allocation_pct", ascending=False).head(n)
+    max_alloc = top["allocation_pct"].max() if len(top) > 0 else 1.0
+
+    return html.Div(className="broker-list", children=[
+        html.Div(className="broker-item", children=[
+            html.Div(f"#{i+1}", className="broker-rank"),
+            html.Div(row["ward_name"], className="broker-name"),
+            html.Div(className="broker-bar-wrap", children=[
+                html.Div(className="broker-bar", style={"width": f"{row['allocation_pct'] / max_alloc * 100}%"})
+            ]),
+            html.Div(f"{row['allocation_pct']:.2f}%", className="broker-score"),
+        ])
+        for i, (_, row) in enumerate(top.iterrows())
+    ])
+
+
+def allocation_page():
+    return html.Div([
+        html.Div(className="page-header", children=[
+            html.Div("Allocation", className="page-tag"),
+            html.Div("Resource Allocation", className="page-title"),
+            html.Div("Proportional task force deployment based on forecasted violence risk",
+                     className="page-subtitle"),
+        ]),
+        html.Div(className="force-selector", children=[
+            html.Label("Select Police Force"),
+            dcc.Dropdown(
+                className="policeforce-dropdown",
+                id="allocation-force-select",
+                options=[{"label": f, "value": f} for f in sorted(WARD_FORCE_MAPPING["police_force"].unique())],
+                value="Metropolitan Police Service",
+                clearable=False,
+                style={
+                    "background": BG_CARD,
+                    "border": f"1px solid {BORDER}",
+                    "color": TEXT_PRI,
+                    "borderRadius": "8px"
+                }
+            ),
+        ]),
+        html.Div(className="card", children=[
+            html.Div(className="card-header", children=[
+                html.Div([
+                    html.Div("Task Force Deployment Map", className="card-title"),
+                    html.Div("Wards coloured by % of task force allocated", className="card-subtitle"),
+                ])
+            ]),
+            dcc.Graph(
+                id="allocation-map",
+                figure=allocation_map(),
+                config={"displayModeBar": False},
+                style={"height": "520px"}
+            ),
+        ]),
+        html.Div(className="card", style={"marginTop": "24px"}, children=[
+            html.Div(className="card-header", children=[
+                html.Div([
+                    html.Div("Top Allocated Wards", className="card-title"),
+                    html.Div("Wards receiving the highest share of the task force", className="card-subtitle"),
+                ])
+            ]),
+            html.Div(id="allocation-leaderboard", children=allocation_leaderboard())
+        ])
+    ])
+
 ## General trends page 
 def general_trends_page():
     return html.Div([
@@ -611,6 +683,7 @@ def general_trends_page():
         html.Div(className="force-selector", children=[
             html.Label("Select Police Force"),
             dcc.Dropdown(
+                className="policeforce-dropdown",
                 id="force-dropdown",
                 options=[{"label": f, "value": f} for f in FORCES],
                 value="All forces",
@@ -631,7 +704,6 @@ def general_trends_page():
                         html.Div("Crime Over Time", className="card-title"),
                         html.Div("Monthly totals · shaded COVID period", className="card-subtitle"),
                     ]),
-                    html.Div("Sample data", className="card-badge warning"),
                 ]),
                 dcc.Graph(
                     id="time-series-chart",
@@ -646,7 +718,6 @@ def general_trends_page():
                         html.Div("Crime Type Breakdown", className="card-title"),
                         html.Div("Distribution across categories", className="card-subtitle"),
                     ]),
-                    html.Div("Sample data", className="card-badge warning"),
                 ]),
                 dcc.Graph(
                     id="crime-dist-chart",
@@ -659,23 +730,6 @@ def general_trends_page():
 
 
 ## Leaderboard function (Areas with highest brokerage scores)
-def make_lsoa_leaderboard(n=10):
-    top_lsoas = LSOA_DF.sort_values("brokerage_score", ascending=False).head(n)
-
-    return html.Div(className="broker-list", children=[
-        html.Div(className="broker-item", children=[
-            html.Div(f"#{i+1}", className="broker-rank"),
-            html.Div(row["ward_name"], className="broker-name"),
-            html.Div(className="broker-bar-wrap", children=[
-                html.Div(
-                    className="broker-bar",
-                    style={"width": f"{row['brokerage_score']}%"}
-                )
-            ]),
-            html.Div(str(row["brokerage_score"]), className="broker-score"),
-        ])
-        for i, (_, row) in enumerate(top_lsoas.iterrows())
-    ])
 def make_ward_leaderboard(n=10):
     top_wards = WARD_DF.sort_values("brokerage_score", ascending=False).head(n)
 
@@ -740,8 +794,8 @@ def render_page(path):
     elif path == "/general-trends":
         return general_trends_page()
     elif path == "/allocation":
-        return placeholder_page("Resource Allocation", "Allocation",
-                                "Coming soon · awaiting forecast results")
+        return allocation_page()
+
     return overview_page()
 
 # Force Explorer callbacks
@@ -843,6 +897,15 @@ def update_lsoa_details(clickData):
 )
 def update_forecast_map(police_force):
     return forecast_per_force_map(police_force)
+
+@app.callback(
+    Output("allocation-map", "figure"),
+    Output("allocation-leaderboard", "children"),
+    Input("allocation-force-select", "value"),
+    prevent_initial_call=True
+)
+def update_allocation(police_force):
+    return allocation_map(police_force), allocation_leaderboard(police_force)
 
 if __name__ == "__main__":
     app.run(debug=True)
