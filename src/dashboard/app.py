@@ -542,7 +542,7 @@ def forecast_page():
 
 
 ## Resource allocation page
-def compute_allocation(police_force, min_pct=0.1, max_pct=20.0):
+def compute_allocation(police_force, min_pct=0.3, max_pct=20.0):
     df = _merge_forcast_with_mapping(FORECASTS, WARD_FORCE_MAPPING)
     df = df[df["police_force"] == police_force].copy()
 
@@ -551,8 +551,16 @@ def compute_allocation(police_force, min_pct=0.1, max_pct=20.0):
         df["allocation_pct"] = 0.0
         return df
 
-    df["allocation_pct"] = (df["forecast_vso"] / total * 100).round(2)
-    df["allocation_pct"] = df["allocation_pct"].where(df["allocation_pct"] >= min_pct, 0.0)
+    raw_pct = df["forecast_vso"] / total * 100
+    eligible = raw_pct >= min_pct
+
+    eligible_total = df.loc[eligible, "forecast_vso"].sum()
+    if eligible_total == 0:
+        df["allocation_pct"] = 0.0
+        return df
+
+    df["allocation_pct"] = 0.0
+    df.loc[eligible, "allocation_pct"] = (df.loc[eligible, "forecast_vso"] / eligible_total * 100).round(2)
     df["allocation_pct"] = df["allocation_pct"].clip(upper=max_pct)
 
     return df
@@ -579,9 +587,9 @@ def allocation_map(police_force="Metropolitan Police Service"):
             "allocation_pct": "Allocation (%)",
         },
         color_continuous_scale=[
-            [0.0, "#111520"],
-            [0.01, "#2a3f80"],
-            [0.5, ACCENT],
+            [0.0, "#f5f5f5"],
+            [0.35, "#ffd166"],
+            [0.65, "#ff8c42"],
             [1.0, "#ff4f4f"]
         ],
         map_style="carto-darkmatter",
