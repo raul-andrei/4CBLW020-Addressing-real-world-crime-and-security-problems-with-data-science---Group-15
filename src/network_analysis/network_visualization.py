@@ -30,7 +30,7 @@ def __mean_rank_across_measures(df):
     return df.set_index('crime_type')[rank_cols].mean(axis=1)
 
 
-def build_brokerage_graph():
+def build_brokerage_graph(where_sql=None, con=None):
     """Build the crime co-occurrence brokerage graph + per-node metrics + layout.
 
     Heavy: pulls from the DB and runs the brokerage analysis. This is the single
@@ -39,6 +39,17 @@ def build_brokerage_graph():
     reuse it, so the network params (kNN k, presence threshold, lift) live in one
     place.
 
+    Parameters
+    ----------
+    where_sql : str, optional
+        SQL filter passed through to build_cooccurrence_network to restrict the
+        graph to a slice (e.g. "reported_by = 'Metropolitan Police Service'" for a
+        single force). None -> all data (the global network).
+    con : duckdb connection, optional
+        Reuse an already-open connection so callers building many force graphs
+        don't reopen the DB each time. If None, a read-only connection is opened
+        and closed here.
+
     Returns
     -------
     G_sim : nx.Graph          kNN-backbone similarity graph, self-loops removed (edges carry 'weight')
@@ -46,13 +57,16 @@ def build_brokerage_graph():
     mean_ranks : pd.Series    mean broker rank across MEASURES, indexed by crime_type
     pos : dict                kamada-kawai layout positions {crime_type: (x, y)}
     """
-    conn = connect()
+    own_conn = con is None
+    if own_conn:
+        con = connect()
 
-    cooccurrence_matrix = build_cooccurrence_network(con=conn)
+    cooccurrence_matrix = build_cooccurrence_network(con=con, where_sql=where_sql)
     G_sim = knn_backbone(create_graph(cooccurrence_matrix, matrix='cooccurrence'), k=3)
     G_distance = to_distance_graph(G_sim)
     result = brokerage_analysis(G_sim, G_distance)
-    conn.close()
+    if own_conn:
+        con.close()
 
     G_sim.remove_edges_from(nx.selfloop_edges(G_sim))
 

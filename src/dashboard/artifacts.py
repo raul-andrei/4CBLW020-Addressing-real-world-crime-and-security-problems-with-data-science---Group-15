@@ -6,10 +6,16 @@ construction + brokerage metrics are reused from
 source of truth); here we only do the plotly rendering in the dashboard's dark
 theme.
 
+One network is built per police force (plus an "All forces" global network) by
+filtering the co-occurrence pipeline with a per-force ``reported_by`` SQL filter.
+They're all serialised into a single ``brokerage_networks.json`` that the
+dashboard loads at boot and switches between via a force dropdown.
+
 Encoding (option 3, channels swapped so brokers pop):
     node size   = brokerage centrality (current-flow betweenness) -> brokers pop
     node colour = how common the crime type is (total volume, log scale)
     edge width  = co-occurrence weight (no hover on edges)
+    target node = Violence and sexual offences drawn red (our forecast target)
 """
 
 import json
@@ -18,6 +24,7 @@ import random
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import plotly.io as pio
 
 from src.network_analysis.preparation import connect
 from src.network_analysis.scores import calculate_average_betweenness
@@ -45,19 +52,58 @@ VOLUME_SCALE = [
     [1.0, "#8fb4ff"],
 ]
 
+# The forecast target. Its node is drawn solid red (off the volume scale) so it
+# reads instantly as "what we're predicting", regardless of its volume/brokerage.
+TARGET_CRIME = "Violence and sexual offences"
+TARGET_COLOUR = "#ff4f4f"
 
-def make_network():
-    """Return the brokerage-crime network as a dark-themed plotly Figure."""
-    G, metrics, _mean_ranks, pos = build_brokerage_graph()
-    nodes = list(G.nodes())
+# Force key for the global (unfiltered) network in the saved artifact / dropdown.
+ALL_FORCES = "All forces"
 
-    # --- crime-type volumes -> node size (option 3) -------------------------
-    con = connect()
+
+def _human_count(v: float) -> str:
+    """Compact volume label: 1_500 -> '1.5k', 2_000_000 -> '2M'."""
+    if v >= 1e6:
+        return f"{v / 1e6:g}M"
+    if v >= 1e3:
+        return f"{v / 1e3:g}k"
+    return f"{v:g}"
+
+
+def _volume_colorbar_ticks(vols):
+    """Round '1/2/5 x 10^k' colourbar ticks within the volume range.
+
+    Returns (tickvals_in_log10, ticktext). Adaptive to the slice size so the bar
+    stays labelled for both the Met (millions) and small forces (thousands).
+    """
+    vols = np.asarray(vols, dtype=float)
+    vols = vols[vols > 0]
+    if vols.size == 0:
+        return [], []
+    vmin, vmax = vols.min(), vols.max()
+    candidates = [m * 10 ** k for k in range(0, 9) for m in (1, 2, 5)]
+    ticks = [c for c in candidates if vmin <= c <= vmax]
+    if not ticks:
+        ticks = [vmax]
+    return list(np.log10(ticks)), [_human_count(c) for c in ticks]
+
+
+def _crime_volumes(con, where_sql=None):
+    """crime_type -> total count for a slice (None where_sql = all data)."""
+    extra = f"WHERE {where_sql}" if where_sql else ""
     vol = con.execute(
-        "SELECT crime_type, COUNT(*) AS n FROM crimes GROUP BY crime_type"
+        f"SELECT crime_type, COUNT(*) AS n FROM crimes {extra} GROUP BY crime_type"
     ).df()
-    con.close()
-    volume = dict(zip(vol["crime_type"], vol["n"]))
+    return dict(zip(vol["crime_type"], vol["n"]))
+
+
+def _network_figure(G, metrics, pos, volume):
+    """Render one brokerage graph as a dark-themed plotly Figure.
+
+    Size = current-flow betweenness (brokerage), colour = crime volume (log), with
+    the target crime split into its own solid-red trace so it pops as the target.
+    """
+    nodes = list(G.nodes())
 
     # --- edges: one muted line per edge, width ~ weight, no hover -----------
     weights = [G[u][v]["weight"] for u, v in G.edges()]
@@ -87,11 +133,6 @@ def make_network():
     # brokers; without log it pegs the scale and flattens everyone else) ------
     vols = np.array([volume.get(n, 0) for n in nodes], dtype=float)
     log_vol = np.log10(np.maximum(vols, 1.0))
-    # human-readable colourbar ticks at round volumes within the data range
-    tick_v = np.array([0.5e6, 1e6, 2e6, 5e6, 10e6])
-    tick_v = tick_v[(tick_v >= vols.min()) & (tick_v <= vols.max())]
-    tickvals = np.log10(tick_v)
-    ticktext = [f"{v / 1e6:g}M" for v in tick_v]
 
     customdata = np.column_stack([
         [volume.get(n, 0) for n in nodes],
@@ -101,16 +142,36 @@ def make_network():
         metrics["degree"].reindex(nodes).to_numpy(),
     ])
 
+    hovertemplate = (
+        "<b>%{text}</b><br>"
+        "Volume: %{customdata[0]:,.0f} crimes<br>"
+        "Current-flow betweenness: %{customdata[2]:.3f}<br>"
+        "Betweenness: %{customdata[1]:.3f}<br>"
+        "Constraint: %{customdata[3]:.3f}<br>"
+        "Degree: %{customdata[4]:.0f}<extra></extra>"
+    )
+
+    # Split the target out so it can be solid red while the rest stay on the
+    # volume colour scale. Boolean masks keep every per-node array aligned.
+    nodes_arr = np.array(nodes)
+    xs = np.array([pos[n][0] for n in nodes])
+    ys = np.array([pos[n][1] for n in nodes])
+    is_target = nodes_arr == TARGET_CRIME
+    is_other = ~is_target
+
+    # Colourbar reflects the non-target nodes (the target is off-scale in red).
+    tickvals, ticktext = _volume_colorbar_ticks(vols[is_other])
+
     node_trace = go.Scatter(
-        x=[pos[n][0] for n in nodes],
-        y=[pos[n][1] for n in nodes],
+        x=xs[is_other],
+        y=ys[is_other],
         mode="markers+text",
-        text=nodes,
+        text=nodes_arr[is_other],
         textposition="bottom center",
         textfont=dict(color=TEXT_PRI, size=10, family="DM Mono, monospace"),
         marker=dict(
-            size=sizes,
-            color=log_vol,
+            size=sizes[is_other],
+            color=log_vol[is_other],
             colorscale=VOLUME_SCALE,
             line=dict(width=1.2, color=BORDER),
             showscale=True,
@@ -122,19 +183,34 @@ def make_network():
                 tickfont=dict(color=TEXT_SEC),
             ),
         ),
-        customdata=customdata,
-        hovertemplate=(
-            "<b>%{text}</b><br>"
-            "Volume: %{customdata[0]:,.0f} crimes<br>"
-            "Current-flow betweenness: %{customdata[2]:.3f}<br>"
-            "Betweenness: %{customdata[1]:.3f}<br>"
-            "Constraint: %{customdata[3]:.3f}<br>"
-            "Degree: %{customdata[4]:.0f}<extra></extra>"
-        ),
+        customdata=customdata[is_other],
+        hovertemplate=hovertemplate,
         showlegend=False,
     )
 
-    fig = go.Figure(data=edge_traces + [node_trace])
+    data = edge_traces + [node_trace]
+
+    if is_target.any():
+        target_trace = go.Scatter(
+            x=xs[is_target],
+            y=ys[is_target],
+            mode="markers+text",
+            text=nodes_arr[is_target],
+            textposition="bottom center",
+            textfont=dict(color=TARGET_COLOUR, size=10, family="DM Mono, monospace"),
+            marker=dict(
+                size=sizes[is_target],
+                color=TARGET_COLOUR,
+                line=dict(width=1.2, color=BORDER),
+                showscale=False,
+            ),
+            customdata=customdata[is_target],
+            hovertemplate=hovertemplate,
+            showlegend=False,
+        )
+        data.append(target_trace)
+
+    fig = go.Figure(data=data)
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
@@ -146,9 +222,42 @@ def make_network():
     )
     # equal aspect so nodes stay circular and the layout isn't stretched
     fig.update_yaxes(scaleanchor="x", scaleratio=1)
-
-    fig.write_json(DASHBOARD_ASSETS / "brokerage_network.json")  # for reuse in the dashboard without rebuilding
     return fig
+
+
+def _build_force_figure(con, where_sql=None):
+    """Build one brokerage-network figure for the slice selected by where_sql."""
+    G, metrics, _mean_ranks, pos = build_brokerage_graph(where_sql=where_sql, con=con)
+    volume = _crime_volumes(con, where_sql)
+    return _network_figure(G, metrics, pos, volume)
+
+
+def make_network():
+    """Build one brokerage network per police force (+ a global "All forces" one)
+    and serialise them all to ``brokerage_networks.json`` for the dashboard.
+
+    Returns the {force -> Figure} dict (the saved file is {force -> plotly JSON}).
+    """
+    con = connect()
+    forces = con.execute("""
+        SELECT DISTINCT reported_by FROM crimes
+        WHERE reported_by IS NOT NULL
+        ORDER BY reported_by
+    """).df()["reported_by"].tolist()
+
+    figures = {ALL_FORCES: _build_force_figure(con, where_sql=None)}
+    for force in forces:
+        force_sql = force.replace("'", "''")  # SQL-escape single quotes
+        figures[force] = _build_force_figure(con, where_sql=f"reported_by = '{force_sql}'")
+    con.close()
+
+    combined = {force: pio.to_json(fig) for force, fig in figures.items()}
+    out = DASHBOARD_ASSETS / "brokerage_networks.json"
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(combined, f)
+    print(f"brokerage_networks.json: {len(combined)} networks "
+          f"({ALL_FORCES} + {len(forces)} forces)")
+    return figures
 
 
 def _ward_names() -> pd.DataFrame:

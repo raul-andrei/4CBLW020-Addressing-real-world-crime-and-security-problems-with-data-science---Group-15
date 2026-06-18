@@ -35,7 +35,13 @@ with open(WARD_PATH, "r", encoding="utf-8") as f:
     WARD_GEOJSON = json.load(f)
 
 
-BROKERAGE_NETWORK = plotly.io.read_json(DASHBOARD_ASSETS / "brokerage_network.json", skip_invalid=True)
+# One brokerage network per police force (+ "All forces"), precomputed by
+# src/dashboard/artifacts.py (make_network). Stored as {force -> plotly JSON};
+# parsed once here so the force dropdown just swaps an already-built figure.
+with open(DASHBOARD_ASSETS / "brokerage_networks.json", encoding="utf-8") as f:
+    _BROKERAGE_RAW = json.load(f)
+BROKERAGE_NETWORKS = {force: plotly.io.from_json(s) for force, s in _BROKERAGE_RAW.items()}
+BROKERAGE_FORCES = list(BROKERAGE_NETWORKS.keys())  # "All forces" first (build order)
 FORECASTS = pd.read_parquet(DASHBOARD_ASSETS / "forecast_snapshot.parquet")
 WARD_FORCE_MAPPING = pd.read_parquet(DASHBOARD_ASSETS / "ward_force_mapping.parquet")
 
@@ -317,7 +323,89 @@ def make_crime_distribution(force):
         """
     df = conn.execute(sql).df()
     df['crime_count'] = df['crime_count'].sort_values(ascending=False)
-    return df 
+    return df
+
+
+def make_crime_mix_over_time(force):
+    """Monthly count per crime type -> share-over-time (100% stacked area)."""
+    conn = connect(BASE_DIR / "data" / "crimes.db")
+    if force == "All forces":
+        sql = """ SELECT year, month_num, crime_type, COUNT(*) AS crime_count
+                FROM crimes
+                GROUP BY year, month_num, crime_type
+                ORDER BY year, month_num """
+    else:
+        sql = f""" SELECT year, month_num, crime_type, COUNT(*) AS crime_count
+                FROM crimes
+                WHERE reported_by = '{force}'
+                GROUP BY year, month_num, crime_type
+                ORDER BY year, month_num """
+
+    df = conn.execute(sql).df()
+    df = df.sort_values(by="crime_type", ascending=False)
+    conn.close()
+
+    df['date'] = pd.to_datetime(dict(year=df['year'], month=df['month_num'], day=1))
+    df = df.drop(columns=['year', 'month_num'])
+    return df
+
+
+# Maps each of the 27 raw `last_outcome` values to a readable "what happened"
+# bucket. "Court result unavailable" and "Status update unavailable" are data
+# gaps (no recorded result), so they sit in Unknown rather than inflating the
+# charged/court bucket; anything unmapped also falls through to Unknown.
+OUTCOME_BUCKETS = {
+    "Investigation complete; no suspect identified":       "No suspect identified",
+    "Unable to prosecute suspect":                         "Unable to prosecute",
+    "Under investigation":                                 "Under investigation",
+    "Awaiting court outcome":                              "Charged / court",
+    "Offender sent to prison":                             "Charged / court",
+    "Offender given community sentence":                   "Charged / court",
+    "Defendant found not guilty":                          "Charged / court",
+    "Offender fined":                                      "Charged / court",
+    "Offender given suspended prison sentence":            "Charged / court",
+    "Offender given conditional discharge":                "Charged / court",
+    "Suspect charged as part of another case":             "Charged / court",
+    "Court case unable to proceed":                        "Charged / court",
+    "Defendant sent to Crown Court":                       "Charged / court",
+    "Offender ordered to pay compensation":                "Charged / court",
+    "Offender deprived of property":                       "Charged / court",
+    "Offender given absolute discharge":                   "Charged / court",
+    "Local resolution":                                    "Out-of-court resolution",
+    "Offender given a caution":                            "Out-of-court resolution",
+    "Offender given a drugs possession warning":           "Out-of-court resolution",
+    "Offender given penalty notice":                       "Out-of-court resolution",
+    "Offender otherwise dealt with":                       "Out-of-court resolution",
+    "Further investigation is not in the public interest": "No further action",
+    "Formal action is not in the public interest":         "No further action",
+    "Further action is not in the public interest":        "No further action",
+    "Action to be taken by another organisation":          "No further action",
+    "None":                                                "Unknown / not recorded",
+    "Status update unavailable":                           "Unknown / not recorded",
+    "Court result unavailable":                            "Unknown / not recorded",
+}
+
+
+def make_outcome_breakdown(force):
+    """Share of crimes ending in each outcome bucket (the case clear-up view)."""
+    conn = connect(BASE_DIR / "data" / "crimes.db")
+    if force == "All forces":
+        sql = """ SELECT last_outcome, COUNT(*) AS n
+                FROM crimes
+                GROUP BY last_outcome """
+    else:
+        sql = f""" SELECT last_outcome, COUNT(*) AS n
+                FROM crimes
+                WHERE reported_by = '{force}'
+                GROUP BY last_outcome """
+
+    df = conn.execute(sql).df()
+    conn.close()
+
+    df['bucket'] = df['last_outcome'].map(OUTCOME_BUCKETS).fillna("Unknown / not recorded")
+    out = df.groupby('bucket', as_index=False)['n'].sum()
+    out['share'] = out['n'] / out['n'].sum() * 100
+    return out
 
 
 # Sidebar
@@ -401,21 +489,39 @@ def overview_page():
 
 # Force Explorer page
 def brokerage_network_page():
+    default_force = BROKERAGE_FORCES[0]  # "All forces"
     return html.Div(className="network-graph-placeholder", children=[
         html.Div(
             children=[
                 html.Div(
                     className="card",
                     children=[
-                        html.Div(className="page-header", 
+                        html.Div(className="page-header",
                                 children=[
                                     html.Div("Brokerage Network", className="page-title"),
-                                    html.Div("Size encodes crime volume, color encodes brokerage", className="page-subtitle"),
-                                ]),  
+                                    html.Div("Size encodes brokerage centrality · colour encodes crime volume · target (Violence and sexual offences) in red",
+                                             className="page-subtitle"),
+                                ]),
+                        html.Div(className="force-selector", children=[
+                            html.Label("Select Police Force"),
+                            dcc.Dropdown(
+                                className="policeforce-dropdown",
+                                id="network-force-select",
+                                options=[{"label": f, "value": f} for f in BROKERAGE_FORCES],
+                                value=default_force,
+                                clearable=False,
+                                style={
+                                    "background": BG_CARD,
+                                    "border": f"1px solid {BORDER}",
+                                    "color": TEXT_PRI,
+                                    "borderRadius": "8px"
+                                }
+                            ),
+                        ]),
                         dcc.Graph(
-                        id = 'network-graph',
-                        figure=BROKERAGE_NETWORK,
-                        config={"displayModeBar": False}
+                            id='network-graph',
+                            figure=BROKERAGE_NETWORKS[default_force],
+                            config={"displayModeBar": False}
                         )
                     ]
                 )
@@ -734,6 +840,36 @@ def general_trends_page():
                 ),
             ]),
         ]),
+
+        html.Div(className="chart-grid", children=[
+            html.Div(className="card", children=[
+                html.Div(className="card-header", children=[
+                    html.Div([
+                        html.Div("Crime Mix Over Time", className="card-title"),
+                        html.Div("Share of each crime type per month", className="card-subtitle"),
+                    ]),
+                ]),
+                dcc.Graph(
+                    id="crime-mix-chart",
+                    config={"displayModeBar": False},
+                    style={"height": "320px"}
+                ),
+            ]),
+
+            html.Div(className="card", children=[
+                html.Div(className="card-header", children=[
+                    html.Div([
+                        html.Div("Case Outcomes", className="card-title"),
+                        html.Div("What happens to reported crimes", className="card-subtitle"),
+                    ]),
+                ]),
+                dcc.Graph(
+                    id="outcome-chart",
+                    config={"displayModeBar": False},
+                    style={"height": "320px"}
+                ),
+            ]),
+        ]),
     ])
 
 
@@ -751,7 +887,7 @@ def make_ward_leaderboard(n=10):
                     style={"width": f"{row['brokerage_score']}%"}
                 )
             ]),
-            html.Div(str(row["brokerage_score"]), className="broker-score"),
+            html.Div(str(round(row["brokerage_score"],2)), className="broker-score"),
         ])
         for i, (_, row) in enumerate(top_wards.iterrows())
     ])
@@ -810,6 +946,8 @@ def render_page(path):
 @app.callback(
     Output("time-series-chart", "figure"),
     Output("crime-dist-chart",  "figure"),
+    Output("crime-mix-chart",   "figure"),
+    Output("outcome-chart",     "figure"),
     Input("force-dropdown", "value"),
 )
 def update_explorer(force):
@@ -848,7 +986,40 @@ def update_explorer(force):
                           gridcolor="rgba(0,0,0,0)",
                           categoryorder="total ascending")  # largest bar at top
 
-    return ts_fig, dist_fig
+    # Crime mix over time (100% stacked area -> share per month)
+    df_mix = make_crime_mix_over_time(force)
+    mix_fig = px.area(
+        df_mix, x="date", y="crime_count", color="crime_type",
+        groupnorm="fraction",
+        color_discrete_sequence=px.colors.qualitative.Light24,
+    )
+    mix_fig.update_traces(
+        line=dict(width=0),
+        hovertemplate="%{x|%b %Y}<br>%{fullData.name}: %{y:.1%}<extra></extra>",
+    )
+    mix_fig.update_layout(**PLOTLY_LAYOUT, height=320)
+    mix_fig.update_xaxes(title_text=None, dtick="M12", tickformat="%Y")
+    mix_fig.update_yaxes(title_text=None, range=[0, 1], tickformat=".0%",
+                         showgrid=False)
+    mix_fig.update_layout(legend=dict(
+        orientation="h", x=0, y=-0.18, font=dict(size=9, color=TEXT_SEC),
+        bgcolor="rgba(0,0,0,0)", title_text=None,
+    ))
+
+    # Case outcomes (clear-up view) -- share per outcome bucket
+    df_out = make_outcome_breakdown(force)
+    out_fig = px.bar(
+        df_out, x="share", y="bucket", orientation="h",
+        opacity=0.7, color_discrete_sequence=[ACCENT],
+    )
+    out_fig.update_traces(hovertemplate="<b>%{y}</b><br>%{x:.1f}% of crimes<extra></extra>")
+    out_fig.update_layout(**PLOTLY_LAYOUT, height=320)
+    out_fig.update_xaxes(title_text=None, ticksuffix="%", showgrid=True, gridcolor=BORDER)
+    out_fig.update_yaxes(title_text=None, tickfont=dict(size=9),
+                         gridcolor="rgba(0,0,0,0)",
+                         categoryorder="total ascending")  # largest share at top
+
+    return ts_fig, dist_fig, mix_fig, out_fig
 
 @app.callback(
     Output("sidebar-nav", "children"),
@@ -914,6 +1085,15 @@ def update_forecast_map(police_force):
 )
 def update_allocation(police_force):
     return allocation_map(police_force), allocation_leaderboard(police_force)
+
+@app.callback(
+    Output("network-graph", "figure"),
+    Input("network-force-select", "value"),
+    prevent_initial_call=True
+)
+def update_network(force):
+    # Precomputed per force; just swap the already-built figure.
+    return BROKERAGE_NETWORKS.get(force, BROKERAGE_NETWORKS[BROKERAGE_FORCES[0]])
 
 if __name__ == "__main__":
     app.run(debug=True)
