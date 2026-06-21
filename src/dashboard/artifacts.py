@@ -405,16 +405,13 @@ def _last_actual_vso(cutoff_period: int) -> pd.DataFrame:
     )
 
 
-def build_forecast_snapshot(use_prophet: bool = True):
+def build_forecast_snapshot():
     """Precompute the next-month V&SO forecast per ward -> parquet the map reads.
 
-    Reuses production_models.predict_next_month, which loads the saved models +
-    last_regressors and predicts the month AFTER training -- no DB, no refit.
-    `use_prophet` selects which pre-trained model to read:
-        True  -> output/models/prophet  (one Prophet per ward)
-        False -> output/models/lgbm     (pooled Poisson LightGBM)
-    The chosen model must already be trained. Point forecast only --
-    the saved predict path returns yhat with no interval.
+    Reuses production_models.predict_next_month, which loads the saved per-ward
+    Prophet models + last_regressors and predicts the month AFTER training -- no
+    DB, no refit. The model must already be trained. Point forecast only -- the
+    saved predict path returns yhat with no interval.
 
     Also attaches the cutoff month's ACTUAL V&SO count (vso_last_month) and the
     absolute change (forecast_vso_change = forecast_vso - vso_last_month) so the
@@ -424,18 +421,12 @@ def build_forecast_snapshot(use_prophet: bool = True):
     """
     import src.new_models_test.production_models as pm
 
-    model = "prophet" if use_prophet else "lgbm"
-    models_dir = pm.OUTPUT_DIR / "models" / model
-    if not (models_dir / "manifest.json").exists():
+    if not (pm.MODELS_DIR / "manifest.json").exists():
         raise FileNotFoundError(
-            f"No saved {model!r} model under {models_dir}. Train it first: set "
-            f"MODEL = {model!r} at the top of production_models.py and run "
+            f"No saved Prophet model under {pm.MODELS_DIR}. Train it first: "
             "`python -m src.new_models_test.production_models`."
         )
 
-    # Point production_models at the chosen model folder, then reuse its exact
-    # load+predict path so the serve logic stays in one place.
-    pm.MODELS_DIR = models_dir
     forecast = pm.predict_next_month()                  # WD21CD, ds, y_pred
     next_ds = pd.Timestamp(forecast["ds"].iloc[0])
 
@@ -468,7 +459,7 @@ def build_ward_force_mapping():
     forces = con.execute(sql).df()
     con.close()
 
-    lsoa_ward_mapping = pd.read_csv(DATA / "lsoa_ward_mapping.csv", sep=';', usecols=['LSOA11CD', 'WD21CD'])  # lsoa_code -> ward_code
+    lsoa_ward_mapping = pd.read_csv(DATA / "lsoa_ward_mapping.csv", usecols=['LSOA11CD', 'WD21CD'], encoding='utf-8-sig')  # lsoa_code -> ward_code
     merged = forces.merge(lsoa_ward_mapping, left_on='lsoa_code', right_on='LSOA11CD') 
 
     ward_forces = (
@@ -485,6 +476,6 @@ def build_ward_force_mapping():
 if __name__ == "__main__":
     make_network()
     build_ward_snapshot()
-    build_forecast_snapshot(use_prophet=True)
+    build_forecast_snapshot()
     build_ward_force_mapping()
     print("artifacts built")

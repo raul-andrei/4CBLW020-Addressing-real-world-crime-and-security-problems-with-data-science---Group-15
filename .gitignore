@@ -1,5 +1,17 @@
-*.parquet
-*.csv
-data/
 venv/
 __pycache__/
+
+# Too big for GitHub (>100 MB) — crimes.db is shared via the team OneDrive (see README)
+data/crimes.db
+data/uk_crime_full_cleaned.parquet
+data/cleaned_data/
+
+# Unused heavy geojsons (not referenced by any code)
+data/wards_dec2021_uk_bgc.geojson
+data/lsoa_boundaries.geojson
+
+# Regenerable outputs / scratch
+src/output/
+src/new_models_test/output/
+network*.png
+.DS_Store

@@ -1,15 +1,15 @@
 """
-compare_models.py — fair head-to-head of the three forecasts on the SAME wards.
+compare_models.py — paired head-to-head of the forecast variants on the SAME wards.
 
 Reads the saved per-(ward, month) predictions:
     output/predictions.csv        (Prophet: baseline + rank_safe variants)
-    output/lgbm_predictions.csv   (pooled LightGBM Poisson)
 
-and INNER-JOINS them on (WD21CD, ds), so every metric is computed on the
-*identical* set of ward-months for all models — a fair, paired comparison.
-(Each model's own summary CSV was computed on its own full ward set, which can
-differ slightly because Prophet skips wards with < MIN_TRAIN_MONTHS; this script
-restricts to the common cells, so its numbers may differ a little from those.)
+and INNER-JOINS the variants on (WD21CD, ds), so every metric is computed on the
+*identical* set of ward-months — a fair, paired comparison of the plain baseline
+against the brokerage-augmented (rank_safe) model. (run_forecast's own summary is
+computed on each variant's full ward set, which can differ slightly because
+Prophet skips wards with < MIN_TRAIN_MONTHS; this script restricts to the common
+cells, so its numbers may differ a little from those.)
 
 Reports:
     * pooled MAE / RMSE / WMAPE per model (+ % change vs the Prophet baseline)
@@ -17,9 +17,7 @@ Reports:
     * pairwise per-ward WIN-RATE (in how many wards is model A better than B?)
     * Wilcoxon signed-rank test on per-ward MAE (is the paired difference real?)
 
-IMPORTANT: run run_forecast.py and lgbm_forecast.py with the SAME N_WARDS, seed
-and SPLIT_DATE first, so they cover the same wards. The script still runs if they
-don't — it just uses the overlap and prints how many wards/cells matched.
+Run run_forecast.py first to produce output/predictions.csv.
 
 Run from repo root:
     venv\\Scripts\\python.exe -m src.new_models_test.compare_models
@@ -40,13 +38,12 @@ from scipy.stats import wilcoxon
 
 OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 PROPHET_PRED = OUTPUT_DIR / "predictions.csv"
-LGBM_PRED = OUTPUT_DIR / "lgbm_predictions.csv"
 SUMMARY_OUT = OUTPUT_DIR / "model_comparison_summary.csv"
 PERWARD_OUT = OUTPUT_DIR / "model_comparison_per_ward_mae.csv"
 
 BASELINE_MODEL = "prophet_baseline"          # reference for the "% change" columns
 # Nice, stable display order; any extra models are appended after these.
-PREFERRED_ORDER = ["prophet_baseline", "prophet_rank_safe", "lgbm_poisson"]
+PREFERRED_ORDER = ["prophet_baseline", "prophet_rank_safe"]
 
 
 def load_predictions() -> pd.DataFrame:
@@ -57,13 +54,8 @@ def load_predictions() -> pd.DataFrame:
         p["model"] = "prophet_" + p["variant"].astype(str)
         frames.append(p[["WD21CD", "ds", "y_true", "y_pred", "model"]])
         print(f"Loaded {PROPHET_PRED.name}: {p['variant'].nunique()} variant(s), {len(p):,} rows")
-    if LGBM_PRED.exists():
-        l = pd.read_csv(LGBM_PRED, parse_dates=["ds"])
-        l["model"] = "lgbm_poisson"
-        frames.append(l[["WD21CD", "ds", "y_true", "y_pred", "model"]])
-        print(f"Loaded {LGBM_PRED.name}: {len(l):,} rows")
     if not frames:
-        raise SystemExit("No prediction files found — run run_forecast.py / lgbm_forecast.py first.")
+        raise SystemExit("No prediction files found — run run_forecast.py first.")
     return pd.concat(frames, ignore_index=True)
 
 

@@ -32,7 +32,7 @@ print(f"Loaded {len(df):,} rows")
 
 # Step 2 - Map LSOAs to wards
 print("Mapping LSOAs to wards...")
-ward_mapping = pd.read_csv(WARD_MAPPING_PATH, sep=";", usecols=["LSOA11CD", "WD21CD", "LAD21CD"])
+ward_mapping = pd.read_csv(WARD_MAPPING_PATH, usecols=["LSOA11CD", "WD21CD", "LAD21CD"], encoding="utf-8-sig")
 ward_mapping = ward_mapping[ward_mapping["LAD21CD"].str.startswith("E09")]
 
 df = df.merge(ward_mapping, left_on="lsoa_code", right_on="LSOA11CD", how="left")
