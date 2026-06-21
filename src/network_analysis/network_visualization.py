@@ -15,8 +15,7 @@ MEASURES = [
     ('constraint', True),
 ]
 
-# Our forecast target -- drawn red in the presentation figure so it stands out;
-# every other crime type is a single neutral blue.
+# forecast target: drawn red, every other crime type one neutral blue
 TARGET_CRIME = "Violence and sexual offences"
 TARGET_COLOUR = "#e23b3b"
 OTHER_COLOUR = "#4f7cff"
@@ -39,22 +38,19 @@ def __mean_rank_across_measures(df):
 def build_brokerage_graph(where_sql=None, con=None):
     """Build the crime co-occurrence brokerage graph + per-node metrics + layout.
 
-    Heavy: pulls from the DB and runs the brokerage analysis. This is the single
-    source of truth for the graph construction — both the matplotlib presentation
-    figure below and the dashboard's plotly artifact (src/dashboard/artifacts.py)
-    reuse it, so the network params (kNN k, presence threshold, lift) live in one
-    place.
+    Pulls from the DB and runs the brokerage analysis. Used by both the matplotlib
+    figure below and the dashboard artifact (src/dashboard/artifacts.py), so the
+    network params (kNN k, presence threshold, lift) stay in one place.
 
     Parameters
     ----------
     where_sql : str, optional
-        SQL filter passed through to build_cooccurrence_network to restrict the
-        graph to a slice (e.g. "reported_by = 'Metropolitan Police Service'" for a
-        single force). None -> all data (the global network).
+        SQL filter passed to build_cooccurrence_network to restrict the graph to a
+        slice (e.g. "reported_by = 'Metropolitan Police Service'" for one force).
+        None means all data.
     con : duckdb connection, optional
-        Reuse an already-open connection so callers building many force graphs
-        don't reopen the DB each time. If None, a read-only connection is opened
-        and closed here.
+        Reuse an open connection when building many force graphs. If None, a
+        read-only connection is opened and closed here.
 
     Returns
     -------
@@ -96,21 +92,21 @@ def visualize_graph(graph_id: int = 0):
         print("Graph has no edges, skipping visualization.")
         return
 
-    # Node sizes — bigger = stronger broker (low mean rank)
+    # node sizes: bigger = stronger broker (low mean rank)
     n_crimes = len(G_sim.nodes())
     node_sizes = [3000 * (n_crimes + 1 - mean_ranks[n]) / n_crimes for n in G_sim.nodes()]
 
-    # Node colours — target crime red, everything else one neutral blue
+    # node colours: target crime red, everything else one neutral blue
     node_colors = [TARGET_COLOUR if n == TARGET_CRIME else OTHER_COLOUR
                    for n in G_sim.nodes()]
 
-    # Edge widths — boosted to emphasise differences (power < 1 amplifies weak edges)
+    # edge widths: power < 1 amplifies weak edges
     edge_weights = [G_sim[u][v]['weight'] for u, v in G_sim.edges()]
     max_weight = max(edge_weights)
     edge_widths = [6 * (w / max_weight) ** 0.7 for w in edge_weights]
     edge_alphas = [0.3 + 0.5 * (w / max_weight) for w in edge_weights]
 
-    # Label positions — offset slightly below nodes for readability
+    # label positions: offset slightly below nodes
     label_pos = {n: (x, y - 0.08) for n, (x, y) in pos.items()}
 
     # Draw
@@ -132,7 +128,7 @@ def visualize_graph(graph_id: int = 0):
         ax=ax,
     )
 
-    # Labels — target in red to match its node, the rest in black
+    # labels: target in red to match its node, rest in black
     other_labels = {n: n for n in G_sim.nodes() if n != TARGET_CRIME}
     target_labels = {n: n for n in G_sim.nodes() if n == TARGET_CRIME}
     nx.draw_networkx_labels(

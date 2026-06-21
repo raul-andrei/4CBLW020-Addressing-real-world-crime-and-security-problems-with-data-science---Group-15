@@ -1,14 +1,11 @@
 """EDA over the full crimes.db dataset (~49M rows, England & Wales, 2017-2026).
 
-Optimised for scale: every chart is driven by a DuckDB aggregation that runs
-inside the database (columnar, multi-threaded, out-of-core) and returns only a
-tiny result set (a few hundred rows at most) to pandas for plotting. The 49M-row
-table is never materialised in Python -- the one larger pull is a SQL-side random
-*sample* of points for the hexbin map.
+Each chart is built from a DuckDB GROUP BY that runs in the database and returns
+only a small result to pandas, so the 49M-row table is never loaded into Python.
+The hexbin map is the exception: it pulls a random sample of points.
 
-crimes.db schema (cleaned/merged):
-    lsoa_code, crime_type, year, month_num, longitude, latitude,
-    last_outcome, reported_by
+crimes.db columns: lsoa_code, crime_type, year, month_num, longitude, latitude,
+last_outcome, reported_by
 """
 
 import duckdb
@@ -35,8 +32,7 @@ def save_fig(name: str, dpi: int = 150) -> None:
 
 # ── Data access ──────────────────────────────────────────────────────────────
 def get_connection() -> duckdb.DuckDBPyConnection:
-    """Open crimes.db read-only. DuckDB parallelises across all cores by default,
-    so the GROUP BYs below scan the 49M rows once, in parallel, per query."""
+    """Open crimes.db read-only."""
     if not DB_PATH.exists():
         raise FileNotFoundError(f"{DB_PATH} not found")
     return duckdb.connect(str(DB_PATH), read_only=True)
@@ -44,12 +40,7 @@ def get_connection() -> duckdb.DuckDBPyConnection:
 
 # ── Null analysis ──────────────────────────────────────────────────────────────
 def summarize_nulls(con):
-    """Per-column null share over the whole table (single aggregate scan).
-
-    crimes.db is the cleaned dataset, so in practice only `last_outcome` is ever
-    null -- this is the trimmed-down equivalent of the raw-data null audit (the
-    old Crime ID / Context / missingness-correlation charts don't apply, those
-    columns aren't in crimes.db)."""
+    """Per-column null percentage. In practice only last_outcome is ever null."""
     cols = ["lsoa_code", "crime_type", "year", "month_num",
             "longitude", "latitude", "last_outcome", "reported_by"]
     sel = ", ".join(f"100.0 * (COUNT(*) - COUNT({c})) / COUNT(*) AS {c}" for c in cols)
@@ -137,7 +128,7 @@ def _bucket_outcomes(outcome: pd.Series) -> np.ndarray:
 
 
 def plot_outcome_by_crime_type(con):
-    # 13 crime types x <=27 outcomes -> <=364 rows; bucket + crosstab in pandas.
+    # small result; bucket + crosstab in pandas
     g = con.execute(
         "SELECT crime_type, last_outcome, COUNT(*) AS count "
         "FROM crimes GROUP BY 1, 2"
@@ -214,7 +205,7 @@ def plot_annual_trend_by_type(con):
 
 # ── 6a. Geographic: top LSOAs by crime count ──────────────────────────────────
 def plot_top_lsoas(con, n: int = 20):
-    # crimes.db has no LSOA name column -> label by LSOA code.
+    # no LSOA name in crimes.db, so label by code
     top = con.execute(
         "SELECT lsoa_code, COUNT(*) AS count "
         f"FROM crimes GROUP BY 1 ORDER BY count DESC LIMIT {n}"
@@ -235,7 +226,7 @@ def plot_top_lsoas(con, n: int = 20):
 
 # ── 6b. Geographic: hexbin density map ────────────────────────────────────────
 def plot_hexbin_density(con, sample_n: int = 500_000):
-    # Sample points inside DuckDB (reservoir) instead of pulling 49M coords.
+    # sample in SQL instead of pulling 49M points
     geo = con.execute(
         "SELECT longitude, latitude FROM crimes "
         "WHERE longitude IS NOT NULL AND latitude IS NOT NULL "

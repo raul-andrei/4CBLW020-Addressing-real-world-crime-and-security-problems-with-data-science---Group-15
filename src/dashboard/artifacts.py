@@ -1,21 +1,15 @@
-"""Build the heavy dashboard artifacts once, so the app just loads them.
+"""Build the heavy dashboard artifacts once so the app just loads them.
 
-For now: the brokerage-crime network figure (crime types = nodes). The graph
-construction + brokerage metrics are reused from
-``src.network_analysis.network_visualization.build_brokerage_graph`` (single
-source of truth); here we only do the plotly rendering in the dashboard's dark
-theme.
+The graph and brokerage metrics come from build_brokerage_graph (in
+network_analysis); here we do the plotly rendering. One network is built per
+police force (plus an "All forces" one) by filtering the co-occurrence pipeline by
+reported_by, and they're saved to brokerage_networks.json for the force dropdown.
 
-One network is built per police force (plus an "All forces" global network) by
-filtering the co-occurrence pipeline with a per-force ``reported_by`` SQL filter.
-They're all serialised into a single ``brokerage_networks.json`` that the
-dashboard loads at boot and switches between via a force dropdown.
-
-Encoding (option 3, channels swapped so brokers pop):
-    node size   = brokerage centrality (current-flow betweenness) -> brokers pop
-    node colour = how common the crime type is (total volume, log scale)
-    edge width  = co-occurrence weight (no hover on edges)
-    target node = Violence and sexual offences drawn red (our forecast target)
+Encoding:
+    node size   = brokerage centrality (current-flow betweenness)
+    node colour = crime volume (log scale)
+    edge width  = co-occurrence weight
+    target node = Violence and sexual offences, drawn red
 """
 
 import json
@@ -36,11 +30,8 @@ DATA = ROOT / "data"
 
 DASHBOARD_ASSETS = ROOT / "src" / "dashboard" / "assets"
 
-# --- dashboard palettes (one per theme; matches src/dashboard/app.py THEMES) ---
-# Colour encodes VOLUME (size encodes brokerage). The volume scale is a cool blue
-# sequential -- NOT the red "risk" scale -- so colour reads as "how much" and isn't
-# mistaken for brokerage/risk (that's the size channel). Each theme's scale is
-# tuned to read on that theme's card background (dark navy card vs white card).
+# dashboard palettes, one per theme (matches THEMES in src/dashboard/app.py).
+# The volume colour scale is blue, tuned to read on each theme's card background.
 NETWORK_THEMES = {
     "dark": {
         "bg_card": "#111520",
@@ -62,11 +53,10 @@ NETWORK_THEMES = {
     },
 }
 
-# The forecast target. Its node is drawn solid red (off the volume scale) so it
-# reads instantly as "what we're predicting", regardless of its volume/brokerage.
+# forecast target: its node is drawn solid red, off the volume scale
 TARGET_CRIME = "Violence and sexual offences"
 
-# Force key for the global (unfiltered) network in the saved artifact / dropdown.
+# key for the global (unfiltered) network in the saved artifact / dropdown
 ALL_FORCES = "All forces"
 
 
@@ -82,8 +72,7 @@ def _human_count(v: float) -> str:
 def _volume_colorbar_ticks(vols):
     """Round '1/2/5 x 10^k' colourbar ticks within the volume range.
 
-    Returns (tickvals_in_log10, ticktext). Adaptive to the slice size so the bar
-    stays labelled for both the Met (millions) and small forces (thousands).
+    Returns (tickvals_in_log10, ticktext).
     """
     vols = np.asarray(vols, dtype=float)
     vols = vols[vols > 0]
@@ -109,13 +98,13 @@ def _crime_volumes(con, where_sql=None):
 def _network_figure(G, metrics, pos, volume, theme="dark"):
     """Render one brokerage graph as a themed plotly Figure.
 
-    Size = current-flow betweenness (brokerage), colour = crime volume (log), with
-    the target crime split into its own solid-red trace so it pops as the target.
+    Size = current-flow betweenness, colour = crime volume (log). The target crime
+    is a separate solid-red trace.
     """
     pal = NETWORK_THEMES.get(theme, NETWORK_THEMES["dark"])
     nodes = list(G.nodes())
 
-    # --- edges: one muted line per edge, width ~ weight, no hover -----------
+    # edges: width scales with weight, no hover
     weights = [G[u][v]["weight"] for u, v in G.edges()]
     max_w = max(weights) if weights else 1.0
     edge_traces = []
@@ -131,16 +120,13 @@ def _network_figure(G, metrics, pos, volume, theme="dark"):
             showlegend=False,
         ))
 
-    # --- node size = brokerage centrality (NaN off-LCC -> least central) ----
-    # Linear min-max (not log/sqrt) so the few brokers visibly pop; centrality
-    # has no extreme outlier the way volume does, so no compression is wanted.
+    # node size = current-flow betweenness, linear min-max scaled (NaN off-LCC -> min)
     cfb = metrics["current_flow_betweenness"].reindex(nodes)
     cfb_vals = cfb.fillna(cfb.min()).to_numpy()
     span = cfb_vals.max() - cfb_vals.min()
     sizes = (18 + (cfb_vals - cfb_vals.min()) / span * (56 - 18)) if span else np.full(len(nodes), 30.0)
 
-    # --- node colour = volume on a LOG scale (Violence is ~16M vs ~0.4M for the
-    # brokers; without log it pegs the scale and flattens everyone else) ------
+    # node colour = volume, log scale (V&SO dwarfs the rest, ~16M vs ~0.4M)
     vols = np.array([volume.get(n, 0) for n in nodes], dtype=float)
     log_vol = np.log10(np.maximum(vols, 1.0))
 
@@ -161,15 +147,14 @@ def _network_figure(G, metrics, pos, volume, theme="dark"):
         "Degree: %{customdata[4]:.0f}<extra></extra>"
     )
 
-    # Split the target out so it can be solid red while the rest stay on the
-    # volume colour scale. Boolean masks keep every per-node array aligned.
+    # target gets its own red trace; the rest stay on the colour scale
     nodes_arr = np.array(nodes)
     xs = np.array([pos[n][0] for n in nodes])
     ys = np.array([pos[n][1] for n in nodes])
     is_target = nodes_arr == TARGET_CRIME
     is_other = ~is_target
 
-    # Colourbar reflects the non-target nodes (the target is off-scale in red).
+    # colourbar covers the non-target nodes
     tickvals, ticktext = _volume_colorbar_ticks(vols[is_other])
 
     node_trace = go.Scatter(
@@ -230,7 +215,7 @@ def _network_figure(G, metrics, pos, volume, theme="dark"):
         xaxis=dict(visible=False),
         yaxis=dict(visible=False),
     )
-    # equal aspect so nodes stay circular and the layout isn't stretched
+    # keep nodes circular
     fig.update_yaxes(scaleanchor="x", scaleratio=1)
     return fig
 
@@ -238,8 +223,8 @@ def _network_figure(G, metrics, pos, volume, theme="dark"):
 def _build_force_figures(con, where_sql=None):
     """Build the brokerage graph once for a slice, then render it in every theme.
 
-    The graph/metrics/layout are theme-independent, so the heavy step runs once;
-    only the cheap plotly rendering repeats per theme. Returns {theme -> Figure}.
+    The graph is theme-independent, so it's built once and only re-rendered per
+    theme. Returns {theme -> Figure}.
     """
     G, metrics, _mean_ranks, pos = build_brokerage_graph(where_sql=where_sql, con=con)
     volume = _crime_volumes(con, where_sql)
@@ -249,10 +234,9 @@ def _build_force_figures(con, where_sql=None):
 
 def make_network():
     """Build one brokerage network per police force (+ a global "All forces" one),
-    in every theme, and serialise them to ``brokerage_networks.json``.
+    in every theme, and save them to brokerage_networks.json.
 
-    Returns {theme -> {force -> Figure}}; the saved file is {theme -> {force ->
-    plotly JSON}}, which the dashboard indexes by the active theme and force.
+    Returns {theme -> {force -> Figure}}; the saved file is {theme -> {force -> json}}.
     """
     con = connect()
     forces = con.execute("""
@@ -268,7 +252,7 @@ def make_network():
         figures_by_force[force] = _build_force_figures(con, where_sql=f"reported_by = '{force_sql}'")
     con.close()
 
-    # Pivot to {theme -> {force -> json}} (the shape the dashboard loads).
+    # pivot to {theme -> {force -> json}}
     figures = {
         theme: {force: per_theme[theme] for force, per_theme in figures_by_force.items()}
         for theme in NETWORK_THEMES
@@ -299,11 +283,8 @@ def _ward_names() -> pd.DataFrame:
 def build_ward_snapshot():
     """Precompute the per-ward brokerage snapshot the dashboard map reads.
 
-    Moved verbatim from app.make_ward_data so the dashboard no longer runs the
-    49M-row pipeline at boot. Trailing-3-month mean avg_betweenness per ward,
-    percentile -> brokerage_score, with risk/action/units/crimes still faked off
-    that score (the alternative colouring is a later discussion). Writes a tiny
-    (~8k-row) parquet to the dashboard assets.
+    Trailing-3-month mean avg_betweenness per ward, turned into a percentile
+    brokerage_score. Writes a small parquet to the dashboard assets.
     """
     np.random.seed(42)
     random.seed(42)
@@ -382,14 +363,11 @@ def build_ward_snapshot():
 
 
 def _last_actual_vso(cutoff_period: int) -> pd.DataFrame:
-    """Actual V&SO count per ward in the model's cutoff month (the month right
-    before the forecast).
+    """Actual V&SO count per ward in the model's cutoff month (the month before
+    the forecast).
 
-    Pulled from the SAME source the model's panel builds its target `y` from --
-    aggregate_lsoas_to_wards(get_crime_data()) filtered to TARGET -- so the number
-    equals the model's last observed `y` exactly, no definitional drift. We skip
-    the full build_ward_panel (which also runs the heavy brokerage/igraph step we
-    don't need here) and just take the V&SO counts at the cutoff period.
+    Uses the same source as the model's target y (aggregate_lsoas_to_wards filtered
+    to TARGET), so it matches the model's last observed value.
     """
     from src.network_analysis.scores import get_crime_data, aggregate_lsoas_to_wards
     from src.new_models_test.build_panel import TARGET
@@ -406,18 +384,13 @@ def _last_actual_vso(cutoff_period: int) -> pd.DataFrame:
 
 
 def build_forecast_snapshot():
-    """Precompute the next-month V&SO forecast per ward -> parquet the map reads.
+    """Precompute the next-month V&SO forecast per ward into a parquet the map reads.
 
-    Reuses production_models.predict_next_month, which loads the saved per-ward
-    Prophet models + last_regressors and predicts the month AFTER training -- no
-    DB, no refit. The model must already be trained. Point forecast only -- the
-    saved predict path returns yhat with no interval.
-
-    Also attaches the cutoff month's ACTUAL V&SO count (vso_last_month) and the
-    absolute change (forecast_vso_change = forecast_vso - vso_last_month) so the
-    map can show forecasted movement, not just level. The baseline is pinned to
-    next_ds - 1 month, so it stays the model's true cutoff month even if the DB
-    later gains a newer month.
+    Uses production_models.predict_next_month (loads the saved Prophet models and
+    predicts the month after training; the model must already be trained). Also
+    attaches the cutoff month's actual V&SO count and the change
+    (forecast_vso_change = forecast_vso - vso_last_month) so the map can show
+    movement, not just level.
     """
     import src.new_models_test.production_models as pm
 
@@ -443,12 +416,12 @@ def build_forecast_snapshot():
     df["vso_last_month"] = df["vso_last_month"].fillna(0)
     df["forecast_vso_change"] = df["forecast_vso"] - df["vso_last_month"]
     
-    df["model"] = model
+    df["model"] = "prophet"
     df["forecast_month"] = next_ds.date().isoformat()
 
     df.to_parquet(DASHBOARD_ASSETS / "forecast_snapshot.parquet")
     ch = df["forecast_vso_change"]
-    print(f"forecast_snapshot.parquet: {len(df)} wards | {model} | {next_ds.date()} "
+    print(f"forecast_snapshot.parquet: {len(df)} wards | prophet | {next_ds.date()} "
           f"| change [{ch.min():.1f}, {ch.max():.1f}]")
 
 

@@ -1,38 +1,19 @@
 """
-Production model: train ONCE, save, then load & forecast next month without ever
-refitting.
+Train one Prophet model per ward on all history, save them, then load and forecast
+the next month without refitting.
 
-Why this is separate from run_forecast.py
------------------------------------------
-`run_forecast.py` is the *backtest*: it holds out a test period and (to keep the
-evaluation honest) fits the brokerage weights only on the training window, and it
-refits per test month. None of that applies once you actually deploy:
+Unlike run_forecast.py (the backtest), this fits on all available data: there is
+no held-out test set when predicting the real future. The regressor is the raw
+rank-weighted broker activity, lagged one month.
 
-  * There is no held-out test set when you forecast the genuine future, so we use
-    ALL available history — for both the rank weights and the Prophet models.
-    (Using less would just throw away signal; the train-only window only ever
-    existed to prevent test leakage during evaluation.)
-  * We fit ONE Prophet model per ward on everything up to the latest month,
-    serialise it, and reload it later to predict — no retraining each month.
-
-The rank activity regressor
----------------------------
-Uses the RAW rank-weighted broker activity, lagged one month (count x weight, NOT
-normalised). Prophet standardises regressors internally, so raw means there is no
-normalisation constant to reproduce at serve time — we just save the weights.
-
-Files written under output/models/prophet/
--------------------------------------------
+Files written under output/models/prophet/:
   rank_safe_models.json.gz   {WD21CD: prophet_json}
-  last_regressors.csv        WD21CD, rank_raw_last = each ward's latest activity
-                             (= the lag-1 regressor for next month)
+  last_regressors.csv        WD21CD, rank_raw_last (each ward's latest activity)
   manifest.json              weights, cutoff/next month, config
 
-Usage
------
-  Train + save:   venv\\Scripts\\python.exe -m src.new_models_test.production_models
-  Predict next:   venv\\Scripts\\python.exe -m src.new_models_test.production_models predict
-                  (or import predict_next_month())
+Run from the repo root:
+  python -m src.new_models_test.production_models           # train + save
+  python -m src.new_models_test.production_models predict   # forecast next month
 """
 from __future__ import annotations
 
@@ -48,7 +29,7 @@ if str(ROOT) not in sys.path:
 import pandas as pd
 from prophet.serialize import model_to_json, model_from_json
 
-# Reuse the canonical panel builders, the Prophet config, and run-wide settings.
+# panel builders + shared run settings
 from src.new_models_test.build_panel import (
     TARGET, build_ward_panel, add_date_columns, compute_rank_weights_safe,
 )
@@ -58,9 +39,9 @@ from src.new_models_test.run_forecast import (
 
 MODELS_DIR = OUTPUT_DIR / "models" / "prophet"
 
-# Production uses ALL available history (no leakage concern for true future prediction).
+# all available history
 PROD_WEIGHTS_SQL = "year BETWEEN 2017 AND 2026"
-REG_NAME = "rank_lag1"                 # the (raw) lagged rank-activity regressor
+REG_NAME = "rank_lag1"                 # lagged rank-activity regressor
 
 
 # --------------------------------------------------------------------------- #
@@ -86,18 +67,16 @@ def _load_variant(name: str) -> dict:
 def _build_training_frame() -> tuple[pd.DataFrame, dict]:
     """Return (panel, weights) ready for fitting.
 
-    panel columns of interest: WD21CD, ds, period, y (=V&SO count), rank_raw (raw
-    count x weight activity), rank_lag1 (rank_raw shifted +1 month within ward —
-    the regressor known one month ahead).
+    Panel columns: WD21CD, ds, period, y (V&SO count), rank_raw (count*weight
+    activity), rank_lag1 (rank_raw lagged one month within ward).
     """
     weights = compute_rank_weights_safe(PROD_WEIGHTS_SQL)
 
-    # Production trains on ALL wards and ALL time periods (no selection, no split).
+    # all wards, all months
     panel = build_ward_panel(score_where_sql=PROD_WEIGHTS_SQL)
     panel = add_date_columns(panel)
 
     # Raw rank-weighted broker activity (sum over all crime types of count*weight).
-    # Computed BEFORE renaming the target, because the weights include V&SO too.
     panel["rank_raw"] = sum(
         panel[c] * w for c, w in weights.items() if c in panel.columns
     )
@@ -162,7 +141,7 @@ def train_and_save() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Load + predict next month (no DB, no refit)
+# Load + predict next month
 # --------------------------------------------------------------------------- #
 def _predict_prophet(next_ds: pd.Timestamp, last_reg: pd.DataFrame) -> pd.DataFrame:
     """Predict next month per ward from the saved per-ward Prophet models."""
@@ -176,14 +155,9 @@ def _predict_prophet(next_ds: pd.Timestamp, last_reg: pd.DataFrame) -> pd.DataFr
 
 
 def predict_next_month() -> pd.DataFrame:
-    """Forecast the month immediately after training, using only saved artifacts.
+    """Forecast the month after training from the saved models (no DB, no refit).
 
-    For the immediate next month this needs NO database access and NO refitting:
-    each ward's lag-1 regressor is its latest observed activity, saved at train
-    time. (To roll further forward once a genuinely new month of crime is
-    observed, recompute that month's activity as sum(new_counts * weights) — the
-    weights are in manifest.json — and feed it as the regressor; models are reused
-    as-is. Refit periodically, e.g. quarterly, so the trend stays current.)
+    Each ward's lag-1 regressor is its latest observed activity, saved at train time.
     """
     manifest = json.loads((MODELS_DIR / "manifest.json").read_text())
     next_ds = pd.Timestamp(manifest["next_ds"])

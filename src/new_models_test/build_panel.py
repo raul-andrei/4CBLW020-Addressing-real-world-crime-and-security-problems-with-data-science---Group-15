@@ -7,10 +7,6 @@ What this module produces (one row per ward-month):
     avg_betweenness,                     (proportion-weighted brokerage activity)
     <broker>_lag1 ... , avg_betweenness_lag1   (regressors, shifted +1 month *within ward*)
 
-Everything here is COUNTS (never shares). The only proportion-based quantity is
-`avg_betweenness`, which is the existing brokerage-activity regressor; it is then
-lagged like the rest.
-
 Reused, unchanged, from the existing pipeline (src/network_analysis/scores.py):
     get_crime_data, aggregate_lsoas_to_wards, calculate_average_betweenness,
 and through calculate_average_betweenness, run_primary_brokerage_analysis from
@@ -31,7 +27,7 @@ from src.network_analysis.scores import (
 TARGET = "Violence and sexual offences"
 BROKERS = ["Robbery", "Theft from the person", "Possession of weapons"]
 
-# Rank-based brokerage weights, COPIED VERBATIM from a colleague's model
+# Rank-based brokerage weights, COPIED VERBATIM from Rauls's model
 # (src/models_london_tests/prophet_brokerage_ward_cooc.py) so the `rank` variant
 # is an identical weighting. Values are (max_rank - rank + 1) on the averaged
 # co-occurrence ranks; higher = more central / more "broker-like".
@@ -52,9 +48,8 @@ RANK_BROKERAGE_SCORES = {
 }
 
 # Source columns that get shifted +1 month within each ward.
-#   TARGET             -> V&SO's own count, lagged -> the autoregressive term used
-#                         by the `ar*` variants (control for the ward's own momentum)
-#   rank_activity      -> colleague's ORIGINAL hard-coded weights (all-data -> leaky)
+#   TARGET             -> V&SO's own count
+#   rank_activity      -> Rauls's ORIGINAL hard-coded weights (all-data -> leaky)
 #   rank_activity_safe -> leakage-safe rank weights recomputed on the train window
 LAG_SOURCE_COLS = [TARGET] + BROKERS + ["avg_betweenness", "rank_activity", "rank_activity_safe"]
 
@@ -65,7 +60,7 @@ def lag_name(col: str) -> str:
 
 def _weighted_activity(panel: pd.DataFrame, weights: dict[str, float]) -> pd.Series:
     """Weighted SUM OF RAW COUNTS over crime types (count x weight), normalised
-    to [0, 1]. Like the colleague's src, every crime type is weighted, not just
+    to [0, 1]. Like Rauls's src, every crime type is weighted, not just
     the 3 brokers. The [0, 1] scaling is cosmetic (Prophet standardises
     regressors internally) and kept only to mirror his construction."""
     cols = [c for c in weights if c in panel.columns]
@@ -77,7 +72,7 @@ def _weighted_activity(panel: pd.DataFrame, weights: dict[str, float]) -> pd.Ser
 def compute_rank_weights_safe(score_where_sql: str | None) -> dict[str, float]:
     """Leakage-safe rank weights: rerun the brokerage analysis on the SAME
     (training) window used for `score`, average the rank across the 4 brokerage
-    metrics, then apply the colleague's (max_rank - rank + 1) formula.
+    metrics, then apply Rauls's (max_rank - rank + 1) formula.
 
     Rank direction: betweenness / current-flow-betweenness / eigenvector ->
     higher = more broker-like (ascending=False); constraint -> lower = more
@@ -111,7 +106,7 @@ def compute_rank_weights_safe(score_where_sql: str | None) -> dict[str, float]:
 
 
 def add_rank_activity(panel: pd.DataFrame) -> pd.DataFrame:
-    """`rank_activity`: colleague's ORIGINAL hard-coded weights (derived from
+    """`rank_activity`: Raul's ORIGINAL hard-coded weights (derived from
     all 2017-2026 data -> contains test-period leakage). Kept as a labelled
     reference variant so leaky-vs-safe can be compared directly.
 

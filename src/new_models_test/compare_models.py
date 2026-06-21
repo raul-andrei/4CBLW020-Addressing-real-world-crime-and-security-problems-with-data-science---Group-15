@@ -1,26 +1,17 @@
 """
-compare_models.py — paired head-to-head of the forecast variants on the SAME wards.
+Compare the two Prophet variants (baseline vs brokerage-augmented) on the same wards.
 
-Reads the saved per-(ward, month) predictions:
-    output/predictions.csv        (Prophet: baseline + rank_safe variants)
+Reads output/predictions.csv and inner-joins the variants on (WD21CD, ds) so the
+metrics use the same ward-months for both. (run_forecast's own summary uses each
+variant's full ward set, which can differ because Prophet skips wards with
+< MIN_TRAIN_MONTHS, so numbers may differ slightly.)
 
-and INNER-JOINS the variants on (WD21CD, ds), so every metric is computed on the
-*identical* set of ward-months — a fair, paired comparison of the plain baseline
-against the brokerage-augmented (rank_safe) model. (run_forecast's own summary is
-computed on each variant's full ward set, which can differ slightly because
-Prophet skips wards with < MIN_TRAIN_MONTHS; this script restricts to the common
-cells, so its numbers may differ a little from those.)
+Reports per model: pooled MAE / RMSE / WMAPE (and % change vs baseline), per-ward
+MAE / WMAPE mean and median, pairwise per-ward win-rate, and a Wilcoxon test on
+per-ward MAE.
 
-Reports:
-    * pooled MAE / RMSE / WMAPE per model (+ % change vs the Prophet baseline)
-    * per-ward MAE / WMAPE: mean & median across wards
-    * pairwise per-ward WIN-RATE (in how many wards is model A better than B?)
-    * Wilcoxon signed-rank test on per-ward MAE (is the paired difference real?)
-
-Run run_forecast.py first to produce output/predictions.csv.
-
-Run from repo root:
-    venv\\Scripts\\python.exe -m src.new_models_test.compare_models
+Run run_forecast.py first, then from the repo root:
+    python -m src.new_models_test.compare_models
 """
 from __future__ import annotations
 
@@ -42,7 +33,7 @@ SUMMARY_OUT = OUTPUT_DIR / "model_comparison_summary.csv"
 PERWARD_OUT = OUTPUT_DIR / "model_comparison_per_ward_mae.csv"
 
 BASELINE_MODEL = "prophet_baseline"          # reference for the "% change" columns
-# Nice, stable display order; any extra models are appended after these.
+# display order; extras appended after
 PREFERRED_ORDER = ["prophet_baseline", "prophet_rank_safe"]
 
 
@@ -55,7 +46,7 @@ def load_predictions() -> pd.DataFrame:
         frames.append(p[["WD21CD", "ds", "y_true", "y_pred", "model"]])
         print(f"Loaded {PROPHET_PRED.name}: {p['variant'].nunique()} variant(s), {len(p):,} rows")
     if not frames:
-        raise SystemExit("No prediction files found — run run_forecast.py first.")
+        raise SystemExit("No prediction files found; run run_forecast.py first.")
     return pd.concat(frames, ignore_index=True)
 
 
@@ -90,7 +81,7 @@ def main() -> None:
     print(f"Paired ward-months: {len(wide):,} (dropped {n_before - len(wide):,} not common to all)")
     print(f"Common wards: {wide.reset_index()['WD21CD'].nunique()}")
     if wide.empty:
-        raise SystemExit("No overlapping ward-months — were the models run on the same wards?")
+        raise SystemExit("No overlapping ward-months found.")
 
     # --- pooled metrics on the identical cells --------------------------------
     y = wide["y_true"]

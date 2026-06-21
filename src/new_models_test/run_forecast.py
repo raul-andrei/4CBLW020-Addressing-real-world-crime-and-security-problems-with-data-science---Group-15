@@ -42,7 +42,7 @@ for _thr in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
 import numpy as np
 import pandas as pd
 
-# --- silence Prophet / cmdstanpy / stan console flooding (must precede import) -
+# --- silence Prophet / cmdstanpy / stan console flooding
 for _name in ("prophet", "cmdstanpy", "stan", "numexpr"):
     logging.getLogger(_name).setLevel(logging.CRITICAL)
 logging.getLogger("cmdstanpy").disabled = True
@@ -107,8 +107,6 @@ def make_model() -> Prophet:
         weekly_seasonality=False,
         daily_seasonality=False,
         seasonality_mode="additive",
-        # We only ever use yhat (the point forecast), never the intervals, so skip
-        # the posterior-predictive simulation. yhat is unchanged; predict is faster.
         uncertainty_samples=0,
     )
 
@@ -170,7 +168,7 @@ def _model_one_ward(ward: str, wdf: pd.DataFrame, split: pd.Timestamp):
     ward src when it has too little data, otherwise None. `wdf` already has the
     target renamed to 'y' and is sorted by ds.
     """
-    _silence_cmdstanpy()  # idempotent; needed because loky workers re-enable it
+    _silence_cmdstanpy()
     train = wdf[wdf["ds"] <= split]
     test = wdf[wdf["ds"] > split]
     if len(train) < MIN_TRAIN_MONTHS or len(test) == 0:

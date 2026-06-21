@@ -11,11 +11,10 @@ from duckdb import connect
 
 app = Dash(__name__, suppress_callback_exceptions=True)
 
-# ── Theming ──────────────────────────────────────────────────────────────────
-# Two palettes. The CSS chrome (sidebar/cards/dropdowns) is themed via CSS
-# variables in style.css (toggled by a `light-theme` class on <body>); the Plotly
-# figures bake colours in server-side, so every figure builder takes a `theme`
-# and pulls its colours from here. Keep these in sync with style.css.
+# ── Theming ──
+# Two palettes. The CSS chrome is themed via CSS variables in style.css (a
+# light-theme class on <body>); Plotly figures set their colours in Python, so
+# each figure builder takes a theme and reads from here. Kept in sync with style.css.
 THEMES = {
     "dark": {
         "bg": "#0a0d14", "bg_card": "#111520",
@@ -80,10 +79,8 @@ with open(WARD_PATH, "r", encoding="utf-8") as f:
     WARD_GEOJSON = json.load(f)
 
 
-# One brokerage network per police force (+ "All forces") per theme, precomputed
-# by src/dashboard/artifacts.py (make_network). Stored as
-# {theme -> {force -> plotly JSON}}; parsed once here so swapping force/theme just
-# picks an already-built figure.
+# Brokerage networks, one per force (+ "All forces") per theme, precomputed by
+# artifacts.py and stored as {theme -> {force -> plotly JSON}}. Parsed once here.
 with open(DASHBOARD_ASSETS / "brokerage_networks.json", encoding="utf-8") as f:
     _BROKERAGE_RAW = json.load(f)
 BROKERAGE_NETWORKS = {
@@ -211,9 +208,8 @@ def make_fake_lsoa_data(geojson):
 
     return df
 
-# Per-ward brokerage snapshot, precomputed once by
-# src/dashboard/artifacts.py (build_ward_snapshot) so the dashboard doesn't run
-# the 49M-row pipeline at boot. Regenerate after a data refresh.
+# Per-ward brokerage snapshot, precomputed by artifacts.py (build_ward_snapshot).
+# Regenerate after a data refresh.
 WARD_SNAPSHOT = DASHBOARD_ASSETS / "ward_snapshot.parquet"
 if not WARD_SNAPSHOT.exists():
     raise FileNotFoundError(
@@ -221,8 +217,7 @@ if not WARD_SNAPSHOT.exists():
     )
 WARD_DF = pd.read_parquet(WARD_SNAPSHOT)
 
-# Fast per-ward lookups for the overview "Selected Ward" click panel: the ward's
-# real brokerage row, its police force, and its next-month V&SO forecast.
+# per-ward lookups for the "Selected Ward" click panel
 WARD_BY_CODE = WARD_DF.set_index("ward_code")
 WARD_FORCE_BY_CODE = dict(zip(WARD_FORCE_MAPPING["ward_code"], WARD_FORCE_MAPPING["police_force"]))
 FORECAST_BY_WARD = FORECASTS.set_index("ward_code")
@@ -390,10 +385,8 @@ def make_crime_mix_over_time(force):
     return df
 
 
-# Maps each of the 27 raw `last_outcome` values to a readable "what happened"
-# bucket. "Court result unavailable" and "Status update unavailable" are data
-# gaps (no recorded result), so they sit in Unknown rather than inflating the
-# charged/court bucket; anything unmapped also falls through to Unknown.
+# Groups the 27 raw last_outcome values into readable buckets. The data-gap values
+# (e.g. "Court result unavailable") go to Unknown, as does anything unmapped.
 OUTCOME_BUCKETS = {
     "Investigation complete; no suspect identified":       "No suspect identified",
     "Unable to prosecute suspect":                         "Unable to prosecute",
@@ -504,7 +497,7 @@ def overview_page(theme="dark"):
                 ]),
                 html.Div(
                     id="lsoa-details",
-                    # colour omitted on purpose -> inherits the themed body text colour
+                    # no colour set, so it inherits the themed body text colour
                     style={
                         "padding": "16px",
                         "fontFamily": "DM Mono, monospace",
@@ -595,7 +588,7 @@ def _force_map_view(geojson, ward_codes):
     min_lon, min_lat, max_lon, max_lat = bounds
     center = {"lon": (min_lon + max_lon) / 2, "lat": (min_lat + max_lat) / 2}
     span = max(max_lon - min_lon, max_lat - min_lat)
-    # Calibrated so the UK-wide span (~10 deg) maps to zoom ~5.1; clamp + small padding.
+    # calibrated so the UK-wide span (~10 deg) maps to zoom ~5.1, then clamped
     zoom = 8.4 - np.log2(span) if span > 0 else 9.0
     zoom = float(np.clip(zoom - 0.3, 4.0, 11.0))
     return center, zoom
@@ -646,10 +639,8 @@ def forecast_per_force_map(police_force: str = "Metropolitan Police Service", th
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         margin=dict(l=0, r=0, t=0, b=0),
-        # Tie the UI-state revision to the force so switching forces is treated as
-        # a new view and Plotly actually applies the computed center/zoom. (With a
-        # constant uirevision, Plotly preserves the current camera on figure
-        # replacement and ignores the new center/zoom -- so the map wouldn't recenter.)
+        # key uirevision on the force so switching forces recenters the map
+        # (a constant uirevision would keep the old camera on the new figure)
         uirevision=police_force,
         coloraxis_colorbar=dict(
             title=dict(text="Forecast change", font=dict(color=p["text_sec"])),
@@ -949,16 +940,13 @@ def placeholder_page(title, tag, message):
 # App layout
 app.layout = html.Div(className="dashboard-wrapper", children=[
     dcc.Location(id="url"),
-    # Theme persists across reloads; a clientside callback mirrors it onto <body>
-    # so the CSS (and the portaled dropdown menus) restyle, and render_page reads
-    # it to rebuild the Plotly figures in the matching palette.
+    # theme persists across reloads; a clientside callback mirrors it onto <body>
+    # for the CSS, and render_page reads it to rebuild the figures
     dcc.Store(id="theme-store", storage_type="local", data="dark"),
     html.Div(id="theme-dummy", style={"display": "none"}),
     sidebar(),
     html.Div(className="main-content", children=[
-        # Spinner covers the server round-trip (build + transfer) for whichever
-        # callback writes into page-content / the maps -- page navigation and
-        # force changes both flow through here.
+        # spinner for the server round-trip on page/force changes
         dcc.Loading(
             id="page-loading",
             delay_show=150,          # don't flash on fast (non-map) pages
@@ -972,7 +960,7 @@ app.layout = html.Div(className="dashboard-wrapper", children=[
     ]),
 ])
 
-# Routing -- re-fires on theme change too, so the page rebuilds with themed figures.
+# Routing. Also re-fires on theme change so the page rebuilds in the new theme.
 @app.callback(
     Output("page-content", "children"),
     Input("url", "pathname"),
@@ -1058,7 +1046,7 @@ def update_explorer(force, theme):
         bgcolor="rgba(0,0,0,0)", title_text=None,
     ))
 
-    # Case outcomes (clear-up view) -- share per outcome bucket
+    # case outcomes: share per outcome bucket
     df_out = make_outcome_breakdown(force)
     out_fig = px.bar(
         df_out, x="share", y="bucket", orientation="h",
@@ -1211,12 +1199,11 @@ def toggle_theme(n_clicks, current):
     Input("theme-store", "data"),
 )
 def theme_toggle_label(theme):
-    # Label shows the mode you'd switch TO.
+    # label shows the mode you'd switch to
     return "🌙  Dark mode" if theme == "light" else "☀  Light mode"
 
 
-# Mirror the theme onto <body> so the CSS variables (and the dropdown menus that
-# Dash portals to <body>, outside the wrapper) switch palette.
+# mirror the theme onto <body> so the CSS restyles (incl. the portaled dropdown menus)
 app.clientside_callback(
     """
     function(theme) {
