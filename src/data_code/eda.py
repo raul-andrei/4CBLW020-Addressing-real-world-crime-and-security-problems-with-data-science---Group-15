@@ -1,12 +1,28 @@
-import pandas as pd
+"""EDA over the full crimes.db dataset (~49M rows, England & Wales, 2017-2026).
+
+Optimised for scale: every chart is driven by a DuckDB aggregation that runs
+inside the database (columnar, multi-threaded, out-of-core) and returns only a
+tiny result set (a few hundred rows at most) to pandas for plotting. The 49M-row
+table is never materialised in Python -- the one larger pull is a SQL-side random
+*sample* of points for the hexbin map.
+
+crimes.db schema (cleaned/merged):
+    lsoa_code, crime_type, year, month_num, longitude, latitude,
+    last_outcome, reported_by
+"""
+
+import duckdb
 import numpy as np
+import pandas as pd
 from pathlib import Path
 import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 
-ROOT = Path(__file__).parent.parent
-OUTPUT_DIR = ROOT / "output"
+SRC_ROOT = Path(__file__).resolve().parent.parent      # .../src
+PROJECT_ROOT = SRC_ROOT.parent                          # repo root
+DB_PATH = PROJECT_ROOT / "data" / "crimes.db"
+OUTPUT_DIR = SRC_ROOT / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 sns.set_theme(style="whitegrid")
@@ -17,134 +33,68 @@ def save_fig(name: str, dpi: int = 150) -> None:
     plt.close()
 
 
-# ── Data loading ───────────────────────────────────────────────────────────────
-path = ROOT / "data" / "london_crime_full.parquet"
-df = pd.read_parquet(path)
-
-cat_cols = ["Crime type", "Reported by", "Falls within", "Last outcome category", "LSOA src", "LSOA name"]
-for col in cat_cols:
-    df[col] = df[col].astype("category")
-
-# Context is 100% null — drop at load time so all functions see a clean df
-df = df.drop(columns=["Context"])
-
-# Derived time columns used throughout
-df["month_dt"] = pd.to_datetime(df["Month"], format="%Y-%m")
-df["year"] = df["month_dt"].dt.year.astype("int16")
-df["month_num"] = df["month_dt"].dt.month.astype("int8")
+# ── Data access ──────────────────────────────────────────────────────────────
+def get_connection() -> duckdb.DuckDBPyConnection:
+    """Open crimes.db read-only. DuckDB parallelises across all cores by default,
+    so the GROUP BYs below scan the 49M rows once, in parallel, per query."""
+    if not DB_PATH.exists():
+        raise FileNotFoundError(f"{DB_PATH} not found")
+    return duckdb.connect(str(DB_PATH), read_only=True)
 
 
 # ── Null analysis ──────────────────────────────────────────────────────────────
-def handle_and_explore_nulls(df):
-    missing_df = df.isna()
-    nulls = missing_df.sum()
-    print(f"Null values in each column:\n{nulls}\n")
+def summarize_nulls(con):
+    """Per-column null share over the whole table (single aggregate scan).
 
-    nulls_percentage = (nulls / len(df)) * 100
-    print(f"Percentage of null values in each column:\n{nulls_percentage}\n")
+    crimes.db is the cleaned dataset, so in practice only `last_outcome` is ever
+    null -- this is the trimmed-down equivalent of the raw-data null audit (the
+    old Crime ID / Context / missingness-correlation charts don't apply, those
+    columns aren't in crimes.db)."""
+    cols = ["lsoa_code", "crime_type", "year", "month_num",
+            "longitude", "latitude", "last_outcome", "reported_by"]
+    sel = ", ".join(f"100.0 * (COUNT(*) - COUNT({c})) / COUNT(*) AS {c}" for c in cols)
+    pct = con.execute(f"SELECT {sel} FROM crimes").df().iloc[0]
+    print(f"Percentage of null values in each column:\n{pct}\n")
 
-    # Per-column null % bar chart
-    null_pct_df = nulls_percentage.rename("pct_null").reset_index()
-    null_pct_df.columns = ["column", "pct_null"]
     fig, ax = plt.subplots(figsize=(12, 5))
-    colors = sns.color_palette("viridis", len(null_pct_df))
-    ax.bar(range(len(null_pct_df)), null_pct_df["pct_null"], color=colors)
-    ax.set_xticks(range(len(null_pct_df)))
-    ax.set_xticklabels(null_pct_df["column"], rotation=45, ha="right")
+    colors = sns.color_palette("viridis", len(pct))
+    ax.bar(range(len(pct)), pct.values, color=colors)
+    ax.set_xticks(range(len(pct)))
+    ax.set_xticklabels(pct.index, rotation=45, ha="right")
     ax.set_title("Percentage of Null Values in Each Column")
     ax.set_xlabel("Column")
     ax.set_ylabel("% Null")
-    ax.set_ylim(0, 50)
+    ax.set_ylim(0, max(50, pct.max() * 1.1))
     plt.tight_layout()
     save_fig("null_percentage")
 
-    # Missingness correlation (only columns with partial nulls)
-    varying = missing_df.columns[(missing_df.sum() > 0) & (missing_df.sum() < len(df))]
-    corr = missing_df[varying].corr()
-    fig, ax = plt.subplots(figsize=(10, 8))
-    sns.heatmap(corr, annot=True, fmt=".2f", cmap="coolwarm", center=0,
-                vmin=-1, vmax=1, square=True, cbar_kws={"label": "Correlation"}, ax=ax)
-    ax.set_title("Correlation of Missingness Between Columns")
-    plt.tight_layout()
-    save_fig("null_correlation_heatmap")
-
-    # Null % over time
-    month_period = df["month_dt"].dt.to_period("M")
-    nulls_by_month = df.isna().groupby(month_period).sum()
-    nulls_by_month = nulls_by_month.loc[:, nulls_by_month.sum() > 0]
-    counts_by_month = df.groupby(month_period).size()
-    null_pct = nulls_by_month.div(counts_by_month, axis=0) * 100
-    null_pct.index = null_pct.index.astype(str)
-    fig, ax = plt.subplots(figsize=(14, 5))
-    null_pct.plot(ax=ax)
-    step = 12
-    ax.set_xticks(range(0, len(null_pct), step))
-    ax.set_xticklabels(null_pct.index[::step], rotation=45, ha="right")
-    ax.set_ylabel("% missing")
-    ax.set_title("Missing data % over time")
-    plt.tight_layout()
-    save_fig("null_over_time")
-
-    # Verify: null Crime IDs should only be anti-social behaviour
-    null_crimeID_counts = (
-        df[df["Crime ID"].isna()]["Crime type"]
-        .value_counts()
-        .reset_index()
-    )
-    null_crimeID_counts.columns = ["crime_type", "count"]
-    # Categorical value_counts includes all categories (even with count=0) — drop them
-    null_crimeID_counts = null_crimeID_counts[null_crimeID_counts["count"] > 0]
-    print(f"Crime types with null Crime ID:\n{null_crimeID_counts}\n")
-    fig, ax = plt.subplots(figsize=(10, 5))
-    colors = sns.color_palette("viridis", len(null_crimeID_counts))
-    ax.barh(null_crimeID_counts["crime_type"], null_crimeID_counts["count"], color=colors)
-    ax.set_xlabel("Count of records with null Crime ID")
-    ax.set_ylabel("")
-    ax.set_title("Crime Types with Null Crime ID")
-    plt.tight_layout()
-    save_fig("null_crime_id_by_type")
-
-    # Location attribute missingness breakdown
-    loc_cols = ["Longitude", "Latitude", "LSOA src", "LSOA name"]
-    missing_locations = df[loc_cols].isna()
-    print(f"Missing values in location columns:\n{missing_locations.sum()}\n")
-    rows_any_missing = df[missing_locations.any(axis=1)]
-    print(
-        f"Rows with missing location data by crime type:\n"
-        f"{rows_any_missing.groupby('Crime type', observed=True).size()}\n"
-    )
-    print(
-        f"Rows with missing location data by outcome:\n"
-        f"{rows_any_missing.groupby('Last outcome category', observed=True).size()}\n"
-    )
-
-
-def handle_and_explore_duplicates(df):
-    duplicate_crimes = df["Crime ID"].duplicated()
-    print(f"Number of duplicate Crime IDs: {duplicate_crimes.sum()}")
-    print(f"Duplicate crime IDs: {df[duplicate_crimes]['Crime ID'].unique()}")
-
 
 # ── 1. Crime type counts ───────────────────────────────────────────────────────
-def plot_crime_type_counts(df):
-    counts = df["Crime type"].value_counts().reset_index()
-    counts.columns = ["crime_type", "count"]
+def plot_crime_type_counts(con):
+    counts = con.execute(
+        "SELECT crime_type, COUNT(*) AS count "
+        "FROM crimes GROUP BY crime_type ORDER BY count DESC"
+    ).df()
 
     fig, ax = plt.subplots(figsize=(10, 7))
     colors = sns.color_palette("viridis", len(counts))
     ax.barh(counts["crime_type"], counts["count"], color=colors)
+    ax.invert_yaxis()  # largest at top
     ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x/1e6:.1f}M"))
     ax.set_xlabel("Count")
     ax.set_ylabel("")
-    ax.set_title("Crime Type Counts (all years)")
+    ax.set_title("Crime Type Counts (all forces, 2017-2026)")
     plt.tight_layout()
     save_fig("crime_type_counts")
     counts.to_csv(OUTPUT_DIR / "crime_type_counts.csv", index=False)
 
 
 # ── 2. Monthly time series ─────────────────────────────────────────────────────
-def plot_monthly_timeseries(df):
-    monthly = df.groupby("month_dt").size().rename("count")
+def plot_monthly_timeseries(con):
+    monthly = con.execute(
+        "SELECT make_date(year, month_num, 1) AS month_dt, COUNT(*) AS count "
+        "FROM crimes GROUP BY 1 ORDER BY 1"
+    ).df().set_index("month_dt")["count"]
 
     fig, ax = plt.subplots(figsize=(14, 5))
     monthly.plot(ax=ax, alpha=0.45, label="Monthly count")
@@ -161,22 +111,19 @@ def plot_monthly_timeseries(df):
 
 
 # ── 3. Outcome distribution by crime type (resolution rates) ──────────────────
-def plot_outcome_by_crime_type(df):
-    is_null = df["Last outcome category"].isna()
-    outcome_str = df["Last outcome category"].astype(str)
-
-    # Vectorized bucketing — order of conditions matters (first match wins)
-    outcome_group = np.select(
+def _bucket_outcomes(outcome: pd.Series) -> np.ndarray:
+    """Collapse the 27 raw outcomes into 6 readable buckets (first match wins)."""
+    is_null = outcome.isna()
+    low = outcome.fillna("").str.lower()
+    return np.select(
         [
             is_null,
-            outcome_str.str.contains("Investigation complete; no suspect identified"),
-            outcome_str.str.contains("Unable to prosecute|no further action", case=False),
-            outcome_str.str.contains(
-                r"charged|imprisoned|Crown Court|prison|suspended sentence"
-                r"|awaiting court|found guilty|sent to Crown", case=False),
-            outcome_str.str.contains(
-                r"caution|penalty notice|community sentence|discharge"
-                r"|otherwise dealt with|local resolution", case=False),
+            low.str.contains("investigation complete; no suspect identified"),
+            low.str.contains("unable to prosecute|no further action"),
+            low.str.contains(r"charged|imprisoned|crown court|prison|suspended sentence"
+                             r"|awaiting court|found guilty|sent to crown"),
+            low.str.contains(r"caution|penalty notice|community sentence|discharge"
+                             r"|otherwise dealt with|local resolution"),
         ],
         [
             "No outcome recorded",
@@ -188,7 +135,17 @@ def plot_outcome_by_crime_type(df):
         default="Pending / Under investigation",
     )
 
-    ct = pd.crosstab(df["Crime type"], pd.Series(outcome_group, name="Outcome group"))
+
+def plot_outcome_by_crime_type(con):
+    # 13 crime types x <=27 outcomes -> <=364 rows; bucket + crosstab in pandas.
+    g = con.execute(
+        "SELECT crime_type, last_outcome, COUNT(*) AS count "
+        "FROM crimes GROUP BY 1, 2"
+    ).df()
+    g["bucket"] = _bucket_outcomes(g["last_outcome"])
+
+    ct = g.pivot_table(index="crime_type", columns="bucket",
+                       values="count", aggfunc="sum", fill_value=0)
     ct_pct = ct.div(ct.sum(axis=1), axis=0) * 100
 
     col_order = [
@@ -209,12 +166,14 @@ def plot_outcome_by_crime_type(df):
 
 
 # ── 4. Crime type × calendar month seasonality heatmap ────────────────────────
-def plot_crime_type_month_heatmap(df):
-    pivot = (
-        df.groupby(["Crime type", "month_num"], observed=True)
-        .size()
-        .unstack(fill_value=0)
-    )
+def plot_crime_type_month_heatmap(con):
+    g = con.execute(
+        "SELECT crime_type, month_num, COUNT(*) AS count "
+        "FROM crimes GROUP BY 1, 2"
+    ).df()
+    pivot = (g.pivot_table(index="crime_type", columns="month_num",
+                           values="count", fill_value=0)
+              .reindex(columns=range(1, 13), fill_value=0))
     pivot.columns = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
     # Normalize each row so we see within-type seasonal share, not volume
@@ -232,17 +191,19 @@ def plot_crime_type_month_heatmap(df):
 
 
 # ── 5. Annual crime trend by type ──────────────────────────────────────────────
-def plot_annual_trend_by_type(df):
-    annual = (
-        df.groupby(["year", "Crime type"], observed=True)
-        .size()
-        .unstack(fill_value=0)
-    )
+def plot_annual_trend_by_type(con):
+    g = con.execute(
+        "SELECT year, crime_type, COUNT(*) AS count "
+        "FROM crimes GROUP BY 1, 2 ORDER BY 1"
+    ).df()
+    annual = g.pivot_table(index="year", columns="crime_type",
+                           values="count", fill_value=0)
+
     fig, ax = plt.subplots(figsize=(14, 7))
     colors = sns.color_palette("tab20", len(annual.columns))
     annual.plot(ax=ax, marker="o", markersize=3, color=colors)
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x/1e3:.0f}K"))
-    ax.set_title("Annual Crime Count by Type")
+    ax.set_title("Annual Crime Count by Type (2026 is a partial year)")
     ax.set_xlabel("")
     ax.set_ylabel("Crimes")
     ax.legend(loc="upper left", fontsize=7, ncols=2)
@@ -252,13 +213,17 @@ def plot_annual_trend_by_type(df):
 
 
 # ── 6a. Geographic: top LSOAs by crime count ──────────────────────────────────
-def plot_top_lsoas(df, n: int = 20):
-    top = df["LSOA name"].value_counts().head(n).reset_index()
-    top.columns = ["lsoa_name", "count"]
+def plot_top_lsoas(con, n: int = 20):
+    # crimes.db has no LSOA name column -> label by LSOA code.
+    top = con.execute(
+        "SELECT lsoa_code, COUNT(*) AS count "
+        f"FROM crimes GROUP BY 1 ORDER BY count DESC LIMIT {n}"
+    ).df()
 
     fig, ax = plt.subplots(figsize=(10, 8))
     colors = sns.color_palette("viridis", len(top))
-    ax.barh(top["lsoa_name"], top["count"], color=colors)
+    ax.barh(top["lsoa_code"], top["count"], color=colors)
+    ax.invert_yaxis()
     ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x/1e3:.0f}K"))
     ax.set_xlabel("Crime count")
     ax.set_ylabel("")
@@ -269,18 +234,21 @@ def plot_top_lsoas(df, n: int = 20):
 
 
 # ── 6b. Geographic: hexbin density map ────────────────────────────────────────
-def plot_hexbin_density(df, sample_n: int = 500_000):
-    geo = df[["Longitude", "Latitude"]].dropna()
-    if len(geo) > sample_n:
-        geo = geo.sample(sample_n, random_state=42)
+def plot_hexbin_density(con, sample_n: int = 500_000):
+    # Sample points inside DuckDB (reservoir) instead of pulling 49M coords.
+    geo = con.execute(
+        "SELECT longitude, latitude FROM crimes "
+        "WHERE longitude IS NOT NULL AND latitude IS NOT NULL "
+        f"USING SAMPLE {sample_n} ROWS"
+    ).df()
 
     fig, ax = plt.subplots(figsize=(10, 12))
     hb = ax.hexbin(
-        geo["Longitude"], geo["Latitude"],
+        geo["longitude"], geo["latitude"],
         gridsize=120, cmap="YlOrRd", mincnt=1, bins="log",
     )
-    plt.colorbar(hb, ax=ax, label="log₁₀(crime count)")
-    ax.set_title(f"Crime Density Hexbin  (n = {len(geo):,} sampled points)")
+    plt.colorbar(hb, ax=ax, label="log10(crime count)")
+    ax.set_title(f"Crime Density Hexbin — England & Wales  (n = {len(geo):,} sampled points)")
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
     plt.tight_layout()
@@ -288,10 +256,19 @@ def plot_hexbin_density(df, sample_n: int = 500_000):
 
 
 # ── 7. Crime type mix within top LSOAs ────────────────────────────────────────
-def plot_crime_mix_top_lsoas(df, n: int = 10):
-    top_lsoas = df["LSOA name"].value_counts().head(n).index
-    sub = df[df["LSOA name"].isin(top_lsoas)]
-    mix = pd.crosstab(sub["LSOA name"], sub["Crime type"])
+def plot_crime_mix_top_lsoas(con, n: int = 10):
+    g = con.execute(f"""
+        WITH top AS (
+            SELECT lsoa_code FROM crimes
+            GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT {n}
+        )
+        SELECT lsoa_code, crime_type, COUNT(*) AS count
+        FROM crimes
+        WHERE lsoa_code IN (SELECT lsoa_code FROM top)
+        GROUP BY 1, 2
+    """).df()
+    mix = g.pivot_table(index="lsoa_code", columns="crime_type",
+                        values="count", fill_value=0)
     mix_pct = mix.div(mix.sum(axis=1), axis=0) * 100
 
     fig, ax = plt.subplots(figsize=(14, 8))
@@ -307,34 +284,36 @@ def plot_crime_mix_top_lsoas(df, n: int = 10):
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    print(f"Shape: {df.shape}")
-    print(f"Memory: {df.memory_usage(deep=True).sum() / 1e9:.2f} GB\n")
+    con = get_connection()
+    n_rows = con.execute("SELECT COUNT(*) FROM crimes").fetchone()[0]
+    print(f"crimes.db rows: {n_rows:,}\n")
 
     print("=== Null analysis ===")
-    handle_and_explore_nulls(df)
+    summarize_nulls(con)
 
     print("=== 1. Crime type counts ===")
-    plot_crime_type_counts(df)
+    plot_crime_type_counts(con)
 
     print("=== 2. Monthly time series ===")
-    plot_monthly_timeseries(df)
+    plot_monthly_timeseries(con)
 
     print("=== 3. Outcome distribution by crime type ===")
-    plot_outcome_by_crime_type(df)
+    plot_outcome_by_crime_type(con)
 
     print("=== 4. Crime type × month seasonality heatmap ===")
-    plot_crime_type_month_heatmap(df)
+    plot_crime_type_month_heatmap(con)
 
     print("=== 5. Annual trend by crime type ===")
-    plot_annual_trend_by_type(df)
+    plot_annual_trend_by_type(con)
 
     print("=== 6a. Top LSOAs ===")
-    plot_top_lsoas(df)
+    plot_top_lsoas(con)
 
     print("=== 6b. Hexbin density map ===")
-    plot_hexbin_density(df)
+    plot_hexbin_density(con)
 
     print("=== 7. Crime mix in top LSOAs ===")
-    plot_crime_mix_top_lsoas(df)
+    plot_crime_mix_top_lsoas(con)
 
+    con.close()
     print(f"\nAll outputs saved to: {OUTPUT_DIR.resolve()}")

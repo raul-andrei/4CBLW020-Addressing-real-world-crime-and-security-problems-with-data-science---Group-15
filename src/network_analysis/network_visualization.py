@@ -15,6 +15,12 @@ MEASURES = [
     ('constraint', True),
 ]
 
+# Our forecast target -- drawn red in the presentation figure so it stands out;
+# every other crime type is a single neutral blue.
+TARGET_CRIME = "Violence and sexual offences"
+TARGET_COLOUR = "#e23b3b"
+OTHER_COLOUR = "#4f7cff"
+
 
 def __add_rank_column(df, score, ascending=False):
     df = df.copy()
@@ -94,12 +100,9 @@ def visualize_graph(graph_id: int = 0):
     n_crimes = len(G_sim.nodes())
     node_sizes = [3000 * (n_crimes + 1 - mean_ranks[n]) / n_crimes for n in G_sim.nodes()]
 
-    # Node colours — two communities, blue vs orange
-    color_map = {0: '#1f77b4', 1: '#ff7f0e'}
-    node_colors = []
-    for n in G_sim.nodes():
-        cid = metrics_pd.loc[n, 'community_id']
-        node_colors.append(color_map.get(int(cid) if not pd.isna(cid) else -1, 'gray'))
+    # Node colours — target crime red, everything else one neutral blue
+    node_colors = [TARGET_COLOUR if n == TARGET_CRIME else OTHER_COLOUR
+                   for n in G_sim.nodes()]
 
     # Edge widths — boosted to emphasise differences (power < 1 amplifies weak edges)
     edge_weights = [G_sim[u][v]['weight'] for u, v in G_sim.edges()]
@@ -129,24 +132,29 @@ def visualize_graph(graph_id: int = 0):
         ax=ax,
     )
 
+    # Labels — target in red to match its node, the rest in black
+    other_labels = {n: n for n in G_sim.nodes() if n != TARGET_CRIME}
+    target_labels = {n: n for n in G_sim.nodes() if n == TARGET_CRIME}
     nx.draw_networkx_labels(
-        G_sim, label_pos,
-        font_size=10,
-        font_weight='bold',
-        ax=ax,
+        G_sim, label_pos, labels=other_labels,
+        font_size=10, font_weight='bold', ax=ax,
+    )
+    nx.draw_networkx_labels(
+        G_sim, label_pos, labels=target_labels,
+        font_size=11, font_weight='bold', font_color=TARGET_COLOUR, ax=ax,
     )
 
     # Legend
     legend_handles = [
-        mpatches.Patch(color='#1f77b4', label='Interpersonal and public-disorder crime cluster'),
-        mpatches.Patch(color='#ff7f0e', label='Acquisitive and property crime cluster'),
+        mpatches.Patch(color=TARGET_COLOUR, label='Violence & sexual offences (forecast target)'),
+        mpatches.Patch(color=OTHER_COLOUR, label='Other crime types'),
     ]
     ax.legend(handles=legend_handles, loc='lower left', fontsize=10, framealpha=0.9)
 
     ax.set_axis_off()
     ax.set_title(
-        'Crime co-occurrence network (lift, presence threshold=3, kNN k=3)\n'
-        'Node size = mean broker rank across three brokerage measures',
+        'Crime co-occurrence network (lift, presence threshold = 3, kNN k = 3)\n'
+        'Node size = brokerage rank across betweenness, current-flow betweenness & constraint',
         fontsize=12, pad=12,
     )
 

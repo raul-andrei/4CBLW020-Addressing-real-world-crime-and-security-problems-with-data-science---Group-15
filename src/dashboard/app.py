@@ -1,25 +1,70 @@
 import dash
-from dash import Dash, html, dcc, Input, Output
+from dash import Dash, html, dcc, Input, Output, State
 from duckdb import connect
 import plotly.express as px
 import plotly
 import pandas as pd
 import numpy as np
-import json ## for the UK Map 
+import json ## for the UK Map
 from pathlib import Path
 from duckdb import connect
 
 app = Dash(__name__, suppress_callback_exceptions=True)
 
-BG = "#0a0d14"
-BG_CARD = "#111520"
-BORDER = "#1e2640"
-ACCENT = "#4f7cff"
-TEXT_PRI = "#e8eaf2"
-TEXT_SEC = "#7a82a0"
-TEXT_MUTE = "#3d4460"
-WARNING = "#ffb84f"
-SUCCESS = "#4fff9f"
+# ── Theming ──────────────────────────────────────────────────────────────────
+# Two palettes. The CSS chrome (sidebar/cards/dropdowns) is themed via CSS
+# variables in style.css (toggled by a `light-theme` class on <body>); the Plotly
+# figures bake colours in server-side, so every figure builder takes a `theme`
+# and pulls its colours from here. Keep these in sync with style.css.
+THEMES = {
+    "dark": {
+        "bg": "#0a0d14", "bg_card": "#111520",
+        "border": "#1e2640", "border_bright": "#2a3560", "grid": "#1e2640",
+        "accent": "#4f7cff", "accent_dim": "#2a3f80",
+        "text_pri": "#e8eaf2", "text_sec": "#7a82a0", "text_mute": "#3d4460",
+        "warning": "#ffb84f", "success": "#4fff9f", "danger": "#ff4f4f",
+        "map_style": "carto-darkmatter",
+        "covid_fill": "rgba(255,184,79,0.06)",
+        # sequential risk heat + diverging (negative<->positive) map scales
+        "seq_scale": [[0.0, "#f5f5f5"], [0.35, "#ffd166"], [0.65, "#ff8c42"], [1.0, "#ff4f4f"]],
+        "div_scale": [[0.0, "#4f7cff"], [0.5, "#1b2236"], [1.0, "#ff6b6b"]],
+        "area_palette": px.colors.qualitative.Light24,
+    },
+    "light": {
+        "bg": "#eef2f9", "bg_card": "#ffffff",
+        "border": "#dbe3f0", "border_bright": "#b9c6de", "grid": "#e6ebf4",
+        "accent": "#2f6fed", "accent_dim": "#aac3f7",
+        "text_pri": "#16233f", "text_sec": "#5b6678", "text_mute": "#98a2b5",
+        "warning": "#ed7d2b", "success": "#1f9d57", "danger": "#e23b3b",
+        "map_style": "carto-positron",
+        "covid_fill": "rgba(237,125,43,0.13)",
+        "seq_scale": [[0.0, "#dbe6ff"], [0.35, "#ffd166"], [0.65, "#f7861f"], [1.0, "#d62828"]],
+        "div_scale": [[0.0, "#2f6fed"], [0.5, "#eef2f9"], [1.0, "#d62828"]],
+        "area_palette": px.colors.qualitative.Dark24,
+    },
+}
+
+
+def palette(theme):
+    return THEMES.get(theme, THEMES["dark"])
+
+
+def plotly_layout(theme="dark"):
+    """Shared Plotly layout (axes/legend/hover) in the given theme."""
+    p = palette(theme)
+    return dict(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="DM Mono, monospace", color=p["text_sec"], size=11),
+        margin=dict(l=0, r=0, t=10, b=0),
+        xaxis=dict(showgrid=False, zeroline=False, color=p["text_mute"],
+                   tickfont=dict(size=10), linecolor=p["border"]),
+        yaxis=dict(showgrid=True, gridcolor=p["grid"], zeroline=False,
+                   color=p["text_mute"], tickfont=dict(size=10), linecolor=p["border"]),
+        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=10, color=p["text_sec"])),
+        hoverlabel=dict(bgcolor=p["bg_card"], bordercolor=p["border"],
+                        font=dict(color=p["text_pri"], size=11)),
+    )
 
 ## Making the UK Map (Loading fake data)
 import random
@@ -35,13 +80,17 @@ with open(WARD_PATH, "r", encoding="utf-8") as f:
     WARD_GEOJSON = json.load(f)
 
 
-# One brokerage network per police force (+ "All forces"), precomputed by
-# src/dashboard/artifacts.py (make_network). Stored as {force -> plotly JSON};
-# parsed once here so the force dropdown just swaps an already-built figure.
+# One brokerage network per police force (+ "All forces") per theme, precomputed
+# by src/dashboard/artifacts.py (make_network). Stored as
+# {theme -> {force -> plotly JSON}}; parsed once here so swapping force/theme just
+# picks an already-built figure.
 with open(DASHBOARD_ASSETS / "brokerage_networks.json", encoding="utf-8") as f:
     _BROKERAGE_RAW = json.load(f)
-BROKERAGE_NETWORKS = {force: plotly.io.from_json(s) for force, s in _BROKERAGE_RAW.items()}
-BROKERAGE_FORCES = list(BROKERAGE_NETWORKS.keys())  # "All forces" first (build order)
+BROKERAGE_NETWORKS = {
+    theme: {force: plotly.io.from_json(s) for force, s in forces.items()}
+    for theme, forces in _BROKERAGE_RAW.items()
+}
+BROKERAGE_FORCES = list(BROKERAGE_NETWORKS["dark"].keys())  # "All forces" first (build order)
 FORECASTS = pd.read_parquet(DASHBOARD_ASSETS / "forecast_snapshot.parquet")
 WARD_FORCE_MAPPING = pd.read_parquet(DASHBOARD_ASSETS / "ward_force_mapping.parquet")
 
@@ -171,10 +220,17 @@ if not WARD_SNAPSHOT.exists():
         f"{WARD_SNAPSHOT} missing -- run: python -m src.dashboard.artifacts"
     )
 WARD_DF = pd.read_parquet(WARD_SNAPSHOT)
+
+# Fast per-ward lookups for the overview "Selected Ward" click panel: the ward's
+# real brokerage row, its police force, and its next-month V&SO forecast.
+WARD_BY_CODE = WARD_DF.set_index("ward_code")
+WARD_FORCE_BY_CODE = dict(zip(WARD_FORCE_MAPPING["ward_code"], WARD_FORCE_MAPPING["police_force"]))
+FORECAST_BY_WARD = FORECASTS.set_index("ward_code")
 ## Making actual map - lsoa based map, keeping it here just for a moment,
 ## Delete later
 
-def make_ward_map():
+def make_ward_map(theme="dark"):
+    p = palette(theme)
     fig = px.choropleth_map(
         WARD_DF,
         geojson=WARD_GEOJSON,
@@ -199,13 +255,8 @@ def make_ward_map():
             "suggested_action": "Suggested action",
             "recommended_units": "Recommended units to deploy",
         },
-        color_continuous_scale=[
-            [0.0, "#f5f5f5"],
-            [0.35, "#ffd166"],
-            [0.65, "#ff8c42"],
-            [1.0, "#ff4f4f"]
-        ],
-        map_style="carto-darkmatter",
+        color_continuous_scale=p["seq_scale"],
+        map_style=p["map_style"],
         zoom=5.1,
         center={"lat": 54.5, "lon": -2.5},
         opacity=0.65
@@ -213,17 +264,20 @@ def make_ward_map():
 
     fig.update_traces(
         marker_line_width=0.3,
-        marker_line_color=BORDER,
+        marker_line_color=p["border"],
+        # Only the real fields; the click handler looks the rest up by ward_code.
         customdata=np.stack([
             WARD_DF["ward_code"],
             WARD_DF["ward_name"],
             WARD_DF["brokerage_score"],
             WARD_DF["risk_level"],
-            WARD_DF["brokerage_crimes"],
-            WARD_DF["predicted_risk"],
-            WARD_DF["suggested_action"],
-            WARD_DF["recommended_units"]
-        ], axis=-1)
+        ], axis=-1),
+        hovertemplate=(
+            "<b>%{customdata[1]}</b><br>"
+            "Ward code: %{customdata[0]}<br>"
+            "Brokerage score: %{customdata[2]:.0f} / 100<br>"
+            "Risk level: %{customdata[3]}<extra></extra>"
+        ),
     )
 
     fig.update_layout(
@@ -231,27 +285,13 @@ def make_ward_map():
         plot_bgcolor="rgba(0,0,0,0)",
         margin=dict(l=0, r=0, t=0, b=0),
         coloraxis_colorbar=dict(
-            title="Brokerage score",
+            title=dict(text="Brokerage score", font=dict(color=p["text_sec"])),
             thickness=10,
-            tickfont=dict(color=TEXT_SEC)
+            tickfont=dict(color=p["text_sec"])
         )
     )
 
     return fig
-
-PLOTLY_LAYOUT = dict(
-    paper_bgcolor="rgba(0,0,0,0)",
-    plot_bgcolor="rgba(0,0,0,0)",
-    font=dict(family="DM Mono, monospace", color=TEXT_SEC, size=11),
-    margin=dict(l=0, r=0, t=10, b=0),
-    xaxis=dict(showgrid=False, zeroline=False, color=TEXT_MUTE,
-               tickfont=dict(size=10), linecolor=BORDER),
-    yaxis=dict(showgrid=True, gridcolor=BORDER, zeroline=False,
-               color=TEXT_MUTE, tickfont=dict(size=10), linecolor=BORDER),
-    legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=10, color=TEXT_SEC)),
-    hoverlabel=dict(bgcolor=BG_CARD, bordercolor=BORDER,
-                    font=dict(color=TEXT_PRI, size=11)),
-)
 
 # Sample data (replace with real data later)
 CRIME_TYPES = [
@@ -416,9 +456,11 @@ def sidebar():
         ]),
         html.Div(className="sidebar-label", children="Navigation"),
         html.Div(id="sidebar-nav"),
+        html.Button(id="theme-toggle", className="theme-toggle", n_clicks=0,
+                    children="☀  Light mode"),
         html.Div(className="sidebar-footer", children=[
             html.Div("Data: data.police.uk"),
-            html.Div("All outputs are decision-support tools only. Final allocation decisions remain with police officers.", 
+            html.Div("All outputs are decision-support tools only. Final allocation decisions remain with police officers.",
                      className="sidebar-disclaimer")
 
         ])
@@ -426,7 +468,7 @@ def sidebar():
 
 # Overview page
 # Overview page
-def overview_page():
+def overview_page(theme="dark"):
 
     return html.Div([
         html.Div(className="page-header", children=[
@@ -447,7 +489,7 @@ def overview_page():
                 ]),
                 dcc.Graph(
                     id="lsoa-map",
-                    figure=make_ward_map(),
+                    figure=make_ward_map(theme),
                     config={"displayModeBar": False},
                     style={"height": "520px"}
                 ),
@@ -462,9 +504,9 @@ def overview_page():
                 ]),
                 html.Div(
                     id="lsoa-details",
+                    # colour omitted on purpose -> inherits the themed body text colour
                     style={
                         "padding": "16px",
-                        "color": TEXT_PRI,
                         "fontFamily": "DM Mono, monospace",
                         "fontSize": "14px"
                     },
@@ -488,7 +530,7 @@ def overview_page():
 
 
 # Force Explorer page
-def brokerage_network_page():
+def brokerage_network_page(theme="dark"):
     default_force = BROKERAGE_FORCES[0]  # "All forces"
     return html.Div(className="network-graph-placeholder", children=[
         html.Div(
@@ -510,17 +552,11 @@ def brokerage_network_page():
                                 options=[{"label": f, "value": f} for f in BROKERAGE_FORCES],
                                 value=default_force,
                                 clearable=False,
-                                style={
-                                    "background": BG_CARD,
-                                    "border": f"1px solid {BORDER}",
-                                    "color": TEXT_PRI,
-                                    "borderRadius": "8px"
-                                }
                             ),
                         ]),
                         dcc.Graph(
                             id='network-graph',
-                            figure=BROKERAGE_NETWORKS[default_force],
+                            figure=BROKERAGE_NETWORKS[theme][default_force],
                             config={"displayModeBar": False}
                         )
                     ]
@@ -564,7 +600,8 @@ def _force_map_view(geojson, ward_codes):
     zoom = float(np.clip(zoom - 0.3, 4.0, 11.0))
     return center, zoom
 
-def forecast_per_force_map(police_force: str = "Metropolitan Police Service"):
+def forecast_per_force_map(police_force: str = "Metropolitan Police Service", theme="dark"):
+    p = palette(theme)
     df = _merge_forcast_with_mapping(FORECASTS, WARD_FORCE_MAPPING)
     df = df[df["police_force"] == police_force]
 
@@ -592,16 +629,17 @@ def forecast_per_force_map(police_force: str = "Metropolitan Police Service"):
             "forecast_vso": "Forecast VSO",
             "forecast_month": "Forecast month",
         },
+        color_continuous_scale=p["div_scale"],
         color_continuous_midpoint=0,
         range_color=(-vso_abs_max, vso_abs_max),
-        map_style="carto-darkmatter",
+        map_style=p["map_style"],
         zoom=zoom,
         center=center,
         opacity=0.65
     )
     fig.update_traces(
         marker_line_width=0.3,
-        marker_line_color=BORDER,
+        marker_line_color=p["border"],
     )
 
     fig.update_layout(
@@ -614,9 +652,9 @@ def forecast_per_force_map(police_force: str = "Metropolitan Police Service"):
         # replacement and ignores the new center/zoom -- so the map wouldn't recenter.)
         uirevision=police_force,
         coloraxis_colorbar=dict(
-            title="Forecast change",
+            title=dict(text="Forecast change", font=dict(color=p["text_sec"])),
             thickness=10,
-            tickfont=dict(color=TEXT_SEC)
+            tickfont=dict(color=p["text_sec"])
         )
     )
 
@@ -624,27 +662,42 @@ def forecast_per_force_map(police_force: str = "Metropolitan Police Service"):
 
 
 ## Forecast page
-def forecast_page():
+def forecast_page(theme="dark"):
 
     return html.Div([
-        html.Div(className="card", children=[
-            dcc.Graph(
-                id="forecast-map",
-                figure=forecast_per_force_map(),
-                config={"displayModeBar": False},
-                )
+        html.Div(className="page-header", children=[
+            html.Div("Forecast", className="page-tag"),
+            html.Div("Violence & Sexual Offences Forecast", className="page-title"),
+            html.Div("Forecasted change in violence & sexual offences for the coming month, ward by ward",
+                     className="page-subtitle"),
         ]),
-        html.Div(className="card", children=[   
+        html.Div(className="force-selector", children=[
+            html.Label("Select Police Force"),
             dcc.Dropdown(
                 className="policeforce-dropdown",
                 id="police-force-select",
                 options=[{"label": f, "value": f} for f in sorted(_merge_forcast_with_mapping(FORECASTS, WARD_FORCE_MAPPING)["police_force"].unique())],
                 value="Metropolitan Police Service",
                 clearable=False,
-            )
-        ])
+            ),
+        ]),
+        html.Div(className="card", children=[
+            html.Div(className="card-header", children=[
+                html.Div([
+                    html.Div("Next-Month Forecast Map", className="card-title"),
+                    html.Div("Ward-level change vs the latest month · blue = falling, red = rising",
+                             className="card-subtitle"),
+                ])
+            ]),
+            dcc.Graph(
+                id="forecast-map",
+                figure=forecast_per_force_map(theme=theme),
+                config={"displayModeBar": False},
+                style={"height": "70vh"},
+            ),
+        ]),
     ],
-    className="forecast-main") #empty for now
+    className="forecast-main")
 
 
 ## Resource allocation page
@@ -672,7 +725,8 @@ def compute_allocation(police_force, min_pct=0.3, max_pct=20.0):
     return df
 
 
-def allocation_map(police_force="Metropolitan Police Service"):
+def allocation_map(police_force="Metropolitan Police Service", theme="dark"):
+    p = palette(theme)
     df = compute_allocation(police_force)
     force_specific = FORCE_WARD_BOUNDARIES.get(police_force, EMPTY_FEATURE_COLLECTION)
     center, zoom = _force_map_view(force_specific, df["ward_code"])
@@ -692,27 +746,22 @@ def allocation_map(police_force="Metropolitan Police Service"):
             "ward_code": "Ward code",
             "allocation_pct": "Allocation (%)",
         },
-        color_continuous_scale=[
-            [0.0, "#f5f5f5"],
-            [0.35, "#ffd166"],
-            [0.65, "#ff8c42"],
-            [1.0, "#ff4f4f"]
-        ],
-        map_style="carto-darkmatter",
+        color_continuous_scale=p["seq_scale"],
+        map_style=p["map_style"],
         zoom=zoom,
         center=center,
         opacity=0.65
     )
-    fig.update_traces(marker_line_width=0.3, marker_line_color=BORDER)
+    fig.update_traces(marker_line_width=0.3, marker_line_color=p["border"])
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         margin=dict(l=0, r=0, t=0, b=0),
         uirevision=police_force,
         coloraxis_colorbar=dict(
-            title="Allocation (%)",
+            title=dict(text="Allocation (%)", font=dict(color=p["text_sec"])),
             thickness=10,
-            tickfont=dict(color=TEXT_SEC)
+            tickfont=dict(color=p["text_sec"])
         )
     )
     return fig
@@ -736,7 +785,7 @@ def allocation_leaderboard(police_force="Metropolitan Police Service", n=10):
     ])
 
 
-def allocation_page():
+def allocation_page(theme="dark"):
     return html.Div([
         html.Div(className="page-header", children=[
             html.Div("Allocation", className="page-tag"),
@@ -752,12 +801,6 @@ def allocation_page():
                 options=[{"label": f, "value": f} for f in sorted(WARD_FORCE_MAPPING["police_force"].unique())],
                 value="Metropolitan Police Service",
                 clearable=False,
-                style={
-                    "background": BG_CARD,
-                    "border": f"1px solid {BORDER}",
-                    "color": TEXT_PRI,
-                    "borderRadius": "8px"
-                }
             ),
         ]),
         html.Div(className="card", children=[
@@ -769,7 +812,7 @@ def allocation_page():
             ]),
             dcc.Graph(
                 id="allocation-map",
-                figure=allocation_map(),
+                figure=allocation_map(theme=theme),
                 config={"displayModeBar": False},
                 style={"height": "520px"}
             ),
@@ -785,8 +828,10 @@ def allocation_page():
         ])
     ])
 
-## General trends page 
-def general_trends_page():
+## General trends page
+def general_trends_page(theme="dark"):
+    # Figures here are filled by update_explorer (which reads the theme); the page
+    # only needs the themed chrome, handled by CSS.
     return html.Div([
         html.Div(className="page-header", children=[
             html.Div("Trends", className="page-tag"),
@@ -802,12 +847,6 @@ def general_trends_page():
                 options=[{"label": f, "value": f} for f in FORCES],
                 value="All forces",
                 clearable=False,
-                style={
-                    "background": BG_CARD,
-                    "border": f"1px solid {BORDER}",
-                    "color": TEXT_PRI,
-                    "borderRadius": "8px"
-                }
             ),
         ]),
 
@@ -910,6 +949,11 @@ def placeholder_page(title, tag, message):
 # App layout
 app.layout = html.Div(className="dashboard-wrapper", children=[
     dcc.Location(id="url"),
+    # Theme persists across reloads; a clientside callback mirrors it onto <body>
+    # so the CSS (and the portaled dropdown menus) restyle, and render_page reads
+    # it to rebuild the Plotly figures in the matching palette.
+    dcc.Store(id="theme-store", storage_type="local", data="dark"),
+    html.Div(id="theme-dummy", style={"display": "none"}),
     sidebar(),
     html.Div(className="main-content", children=[
         # Spinner covers the server round-trip (build + transfer) for whichever
@@ -928,19 +972,24 @@ app.layout = html.Div(className="dashboard-wrapper", children=[
     ]),
 ])
 
-# Routing
-@app.callback(Output("page-content", "children"), Input("url", "pathname"))
-def render_page(path):
+# Routing -- re-fires on theme change too, so the page rebuilds with themed figures.
+@app.callback(
+    Output("page-content", "children"),
+    Input("url", "pathname"),
+    Input("theme-store", "data"),
+)
+def render_page(path, theme):
+    theme = theme or "dark"
     if path == "/brokerage-network":
-        return brokerage_network_page()
+        return brokerage_network_page(theme)
     elif path == "/forecast":
-        return forecast_page()
+        return forecast_page(theme)
     elif path == "/general-trends":
-        return general_trends_page()
+        return general_trends_page(theme)
     elif path == "/allocation":
-        return allocation_page()
+        return allocation_page(theme)
 
-    return overview_page()
+    return overview_page(theme)
 
 # Force Explorer callbacks
 @app.callback(
@@ -949,8 +998,11 @@ def render_page(path):
     Output("crime-mix-chart",   "figure"),
     Output("outcome-chart",     "figure"),
     Input("force-dropdown", "value"),
+    State("theme-store", "data"),
 )
-def update_explorer(force):
+def update_explorer(force, theme):
+    p = palette(theme)
+    layout = plotly_layout(theme)
     df_ts = make_time_series(force)
 
     # Time series
@@ -961,27 +1013,27 @@ def update_explorer(force):
     tickformat="%Y",      # label as "2017"  (or "%b %Y" -> "Feb 2017")
     )
 
-    ts_fig.update_traces(hovertemplate="%{x|%b %Y}: %{y:,}")
+    ts_fig.update_traces(line_color=p["accent"], hovertemplate="%{x|%b %Y}: %{y:,}")
 
     ts_fig.add_vrect(x0="2020-03-01", x1="2021-07-01",
-                     fillcolor="rgba(255,184,79,0.06)",
+                     fillcolor=p["covid_fill"],
                      layer="below", line_width=0,
                      annotation_text="COVID", annotation_position="top left",
-                     annotation_font=dict(size=9, color=WARNING))
+                     annotation_font=dict(size=9, color=p["warning"]))
 
     # Crime distribution
     df = make_crime_distribution(force)
 
     dist_fig = px.bar(
         df, x="crime_count", y="crime_type", orientation="h",
-        opacity=0.7, color_discrete_sequence=[ACCENT],
+        opacity=0.7, color_discrete_sequence=[p["accent"]],
     )
     dist_fig.update_traces(hovertemplate="<b>%{y}</b><br>%{x:,} crimes<extra></extra>")
 
-    ts_fig.update_layout(**PLOTLY_LAYOUT, height=280)
+    ts_fig.update_layout(**layout, height=280)
 
-    dist_fig.update_layout(**PLOTLY_LAYOUT, height=280)
-    dist_fig.update_xaxes(title_text=None, showgrid=True, gridcolor=BORDER)
+    dist_fig.update_layout(**layout, height=280)
+    dist_fig.update_xaxes(title_text=None, showgrid=True, gridcolor=p["grid"])
     dist_fig.update_yaxes(title_text=None, tickfont=dict(size=9),
                           gridcolor="rgba(0,0,0,0)",
                           categoryorder="total ascending")  # largest bar at top
@@ -991,18 +1043,18 @@ def update_explorer(force):
     mix_fig = px.area(
         df_mix, x="date", y="crime_count", color="crime_type",
         groupnorm="fraction",
-        color_discrete_sequence=px.colors.qualitative.Light24,
+        color_discrete_sequence=p["area_palette"],
     )
     mix_fig.update_traces(
         line=dict(width=0),
         hovertemplate="%{x|%b %Y}<br>%{fullData.name}: %{y:.1%}<extra></extra>",
     )
-    mix_fig.update_layout(**PLOTLY_LAYOUT, height=320)
+    mix_fig.update_layout(**layout, height=320)
     mix_fig.update_xaxes(title_text=None, dtick="M12", tickformat="%Y")
     mix_fig.update_yaxes(title_text=None, range=[0, 1], tickformat=".0%",
                          showgrid=False)
     mix_fig.update_layout(legend=dict(
-        orientation="h", x=0, y=-0.18, font=dict(size=9, color=TEXT_SEC),
+        orientation="h", x=0, y=-0.18, font=dict(size=9, color=p["text_sec"]),
         bgcolor="rgba(0,0,0,0)", title_text=None,
     ))
 
@@ -1010,11 +1062,11 @@ def update_explorer(force):
     df_out = make_outcome_breakdown(force)
     out_fig = px.bar(
         df_out, x="share", y="bucket", orientation="h",
-        opacity=0.7, color_discrete_sequence=[ACCENT],
+        opacity=0.7, color_discrete_sequence=[p["accent"]],
     )
     out_fig.update_traces(hovertemplate="<b>%{y}</b><br>%{x:.1f}% of crimes<extra></extra>")
-    out_fig.update_layout(**PLOTLY_LAYOUT, height=320)
-    out_fig.update_xaxes(title_text=None, ticksuffix="%", showgrid=True, gridcolor=BORDER)
+    out_fig.update_layout(**layout, height=320)
+    out_fig.update_xaxes(title_text=None, ticksuffix="%", showgrid=True, gridcolor=p["grid"])
     out_fig.update_yaxes(title_text=None, tickfont=dict(size=9),
                          gridcolor="rgba(0,0,0,0)",
                          categoryorder="total ascending")  # largest share at top
@@ -1050,50 +1102,131 @@ def update_lsoa_details(clickData):
     if not clickData:
         return html.Div([
             html.Div("No ward selected", style={"fontWeight": "bold", "marginBottom": "10px"}),
-            html.Div("No ward selected", style={"fontWeight": "bold", "marginBottom": "10px"}),
-            html.Div("Click an area on the map to view brokerage details.")
+            html.Div("Click a ward on the map to see its brokerage score and "
+                     "next-month violence forecast."),
         ])
 
-    point = clickData["points"][0]
-    ward_code, ward_name, score, risk_level, crimes, predicted_risk, action, units = point["customdata"]
+    ward_code = clickData["points"][0]["customdata"][0]
+    if ward_code not in WARD_BY_CODE.index:
+        return html.Div("No data for this ward.")
 
-    return html.Div([
-        html.Div(ward_name, style={"fontSize": "18px", "fontWeight": "bold", "marginBottom": "12px"}),
-        html.Div(f"Ward code: {ward_code}", style={"marginBottom": "8px"}),
-        html.Div(f"Brokerage score: {score}", style={"marginBottom": "8px"}),
-        html.Div(f"Risk level: {risk_level}", style={"marginBottom": "8px"}),
-        html.Div(f"Identified brokerage crimes: {crimes}", style={"marginBottom": "8px"}),
-        html.Div(f"Predicted risk: {predicted_risk}", style={"marginBottom": "8px"}),
-        html.Div(f"Suggested action: {action}", style={"marginBottom": "8px"}),
-        html.Div(f"Recommended units: {units}", style={"marginBottom": "8px"}),
-    ])
+    ward = WARD_BY_CODE.loc[ward_code]
+    ward_name = ward["ward_name"]
+    score = float(ward["brokerage_score"])
+    risk_level = ward["risk_level"]
+    force = WARD_FORCE_BY_CODE.get(ward_code, "—")
+
+    # Brokerage rank across all wards (brokerage_score is already a percentile).
+    total = len(WARD_DF)
+    rank = int((WARD_DF["brokerage_score"] > score).sum()) + 1
+    top_pct = rank / total * 100
+
+    def row(label, value, value_style=None):
+        return html.Div(style={"marginBottom": "8px"}, children=[
+            html.Span(f"{label}  ", style={"opacity": 0.6}),
+            html.Span(value, style={**{"fontWeight": 600}, **(value_style or {})}),
+        ])
+
+    def section(title):
+        return html.Div(title.upper(), style={
+            "opacity": 0.5, "fontSize": "11px", "letterSpacing": "1.5px",
+            "marginTop": "18px", "marginBottom": "8px",
+        })
+
+    children = [
+        html.Div(ward_name, style={"fontSize": "18px", "fontWeight": "bold", "marginBottom": "4px"}),
+        html.Div(f"{ward_code} · {force}", style={"opacity": 0.6, "fontSize": "12px"}),
+
+        section("Brokerage risk"),
+        row("Score:", f"{score:.0f} / 100"),
+        row("Risk band:", risk_level),
+        row("Rank:", f"#{rank:,} of {total:,} wards (top {top_pct:.0f}%)"),
+    ]
+
+    if ward_code in FORECAST_BY_WARD.index:
+        fc = FORECAST_BY_WARD.loc[ward_code]
+        change = float(fc["forecast_vso_change"])
+        month_label = pd.Timestamp(fc["forecast_month"]).strftime("%b %Y")
+        if change > 0:
+            arrow, sign, colour = "↑", "+", "#e23b3b"   # more violence forecast
+        elif change < 0:
+            arrow, sign, colour = "↓", "", "#1f9d57"    # less violence forecast
+        else:
+            arrow, sign, colour = "→", "", None
+        children += [
+            section(f"Violence & sexual offences forecast · {month_label}"),
+            row("Expected:", f"{float(fc['forecast_vso']):.0f} crimes"),
+            row("Last month:", f"{float(fc['vso_last_month']):.0f} crimes"),
+            row("Change:", f"{arrow} {sign}{change:.0f} vs last month",
+                value_style={"color": colour} if colour else None),
+        ]
+
+    return html.Div(children)
 
 
 @app.callback(
     Output("forecast-map", "figure"),
     Input("police-force-select", "value"),
+    State("theme-store", "data"),
     prevent_initial_call=True
 )
-def update_forecast_map(police_force):
-    return forecast_per_force_map(police_force)
+def update_forecast_map(police_force, theme):
+    return forecast_per_force_map(police_force, theme=theme)
 
 @app.callback(
     Output("allocation-map", "figure"),
     Output("allocation-leaderboard", "children"),
     Input("allocation-force-select", "value"),
+    State("theme-store", "data"),
     prevent_initial_call=True
 )
-def update_allocation(police_force):
-    return allocation_map(police_force), allocation_leaderboard(police_force)
+def update_allocation(police_force, theme):
+    return allocation_map(police_force, theme=theme), allocation_leaderboard(police_force)
 
 @app.callback(
     Output("network-graph", "figure"),
     Input("network-force-select", "value"),
+    State("theme-store", "data"),
     prevent_initial_call=True
 )
-def update_network(force):
-    # Precomputed per force; just swap the already-built figure.
-    return BROKERAGE_NETWORKS.get(force, BROKERAGE_NETWORKS[BROKERAGE_FORCES[0]])
+def update_network(force, theme):
+    # Precomputed per force + theme; just swap the already-built figure.
+    nets = BROKERAGE_NETWORKS.get(theme, BROKERAGE_NETWORKS["dark"])
+    return nets.get(force, nets[BROKERAGE_FORCES[0]])
+
+
+# ── Theme toggle ──────────────────────────────────────────────────────────────
+@app.callback(
+    Output("theme-store", "data"),
+    Input("theme-toggle", "n_clicks"),
+    State("theme-store", "data"),
+    prevent_initial_call=True,
+)
+def toggle_theme(n_clicks, current):
+    return "light" if (current or "dark") == "dark" else "dark"
+
+
+@app.callback(
+    Output("theme-toggle", "children"),
+    Input("theme-store", "data"),
+)
+def theme_toggle_label(theme):
+    # Label shows the mode you'd switch TO.
+    return "🌙  Dark mode" if theme == "light" else "☀  Light mode"
+
+
+# Mirror the theme onto <body> so the CSS variables (and the dropdown menus that
+# Dash portals to <body>, outside the wrapper) switch palette.
+app.clientside_callback(
+    """
+    function(theme) {
+        document.body.classList.toggle('light-theme', theme === 'light');
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("theme-dummy", "children"),
+    Input("theme-store", "data"),
+)
 
 if __name__ == "__main__":
     app.run(debug=True)

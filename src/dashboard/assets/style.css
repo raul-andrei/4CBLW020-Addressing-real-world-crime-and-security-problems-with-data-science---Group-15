@@ -463,3 +463,68 @@ body {
     font-size: 11px;
     line-height: 1.5;
 }
+
+/* ── Theme toggle ── */
+.theme-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    margin-top: 16px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: var(--bg-card-hover);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.3px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.theme-toggle:hover {
+    color: var(--accent);
+    border-color: var(--accent-dim);
+    background: var(--accent-glow);
+}
+
+/* ── Light theme ──
+   Defaults (dark) live in :root; toggling `light-theme` on <body> re-declares the
+   palette + Dash dropdown tokens for everything inside <body> -- including the
+   dropdown menu Dash portals out to <body>. A clientside callback in app.py adds
+   /removes this class from the theme store. Keep these in sync with THEMES in
+   src/dashboard/app.py. */
+body.light-theme {
+    --bg: #eef2f9;
+    --bg-card: #ffffff;
+    --bg-card-hover: #f1f5fc;
+    --border: #dbe3f0;
+    --border-bright: #b9c6de;
+    --accent: #2f6fed;
+    --accent-dim: #aac3f7;
+    --accent-glow: rgba(47, 111, 237, 0.12);
+    --danger: #e23b3b;
+    --warning: #ed7d2b;
+    --success: #1f9d57;
+    --text-primary: #16233f;
+    --text-secondary: #5b6678;
+    --text-muted: #98a2b5;
+
+    /* Dash 4 dropdown tokens (see the :root block above for what each maps to) */
+    --Dash-Fill-Inverse-Strong: var(--bg-card) !important;
+    --Dash-Stroke-Strong: var(--border-bright) !important;
+    --Dash-Stroke-Weak: var(--border) !important;
+    --Dash-Text-Strong: var(--text-primary) !important;
+    --Dash-Text-Primary: var(--text-primary) !important;
+    --Dash-Text-Weak: var(--text-secondary) !important;
+    --Dash-Text-Disabled: var(--text-muted) !important;
+    --Dash-Fill-Interactive-Strong: var(--accent) !important;
+    --Dash-Fill-Interactive-Weak: var(--accent-glow) !important;
+    --Dash-Fill-Primary-Hover: var(--bg-card-hover) !important;
+    --Dash-Fill-Primary-Active: var(--bg-card-hover) !important;
+    --Dash-Fill-Disabled: var(--border) !important;
+    --Dash-Shading-Strong: rgba(20, 35, 70, 0.18) !important;
+    --Dash-Shading-Weak: rgba(20, 35, 70, 0.10) !important;
+}

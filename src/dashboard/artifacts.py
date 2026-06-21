@@ -36,26 +36,35 @@ DATA = ROOT / "data"
 
 DASHBOARD_ASSETS = ROOT / "src" / "dashboard" / "assets"
 
-# --- dashboard palette (matches src/dashboard/app.py) -----------------------
-BG_CARD = "#111520"
-BORDER = "#1e2640"
-ACCENT = "#4f7cff"
-TEXT_PRI = "#e8eaf2"
-TEXT_SEC = "#7a82a0"
-
-# Colour now encodes VOLUME (size encodes brokerage). Deliberately a cool blue
-# sequential -- NOT the dashboard's red "risk" scale -- so colour reads clearly
-# as "how much" and isn't mistaken for brokerage/risk (that's the size channel).
-VOLUME_SCALE = [
-    [0.0, "#2c3656"],
-    [0.5, ACCENT],
-    [1.0, "#8fb4ff"],
-]
+# --- dashboard palettes (one per theme; matches src/dashboard/app.py THEMES) ---
+# Colour encodes VOLUME (size encodes brokerage). The volume scale is a cool blue
+# sequential -- NOT the red "risk" scale -- so colour reads as "how much" and isn't
+# mistaken for brokerage/risk (that's the size channel). Each theme's scale is
+# tuned to read on that theme's card background (dark navy card vs white card).
+NETWORK_THEMES = {
+    "dark": {
+        "bg_card": "#111520",
+        "node_line": "#1e2640",
+        "text_pri": "#e8eaf2",
+        "text_sec": "#7a82a0",
+        "edge_rgb": "122,130,160",
+        "target_colour": "#ff4f4f",
+        "volume_scale": [[0.0, "#2c3656"], [0.5, "#4f7cff"], [1.0, "#8fb4ff"]],
+    },
+    "light": {
+        "bg_card": "#ffffff",
+        "node_line": "#9aa6bd",
+        "text_pri": "#16233f",
+        "text_sec": "#5b6678",
+        "edge_rgb": "110,124,150",
+        "target_colour": "#e23b3b",
+        "volume_scale": [[0.0, "#bcd2f5"], [0.5, "#2f6fed"], [1.0, "#15356f"]],
+    },
+}
 
 # The forecast target. Its node is drawn solid red (off the volume scale) so it
 # reads instantly as "what we're predicting", regardless of its volume/brokerage.
 TARGET_CRIME = "Violence and sexual offences"
-TARGET_COLOUR = "#ff4f4f"
 
 # Force key for the global (unfiltered) network in the saved artifact / dropdown.
 ALL_FORCES = "All forces"
@@ -97,12 +106,13 @@ def _crime_volumes(con, where_sql=None):
     return dict(zip(vol["crime_type"], vol["n"]))
 
 
-def _network_figure(G, metrics, pos, volume):
-    """Render one brokerage graph as a dark-themed plotly Figure.
+def _network_figure(G, metrics, pos, volume, theme="dark"):
+    """Render one brokerage graph as a themed plotly Figure.
 
     Size = current-flow betweenness (brokerage), colour = crime volume (log), with
     the target crime split into its own solid-red trace so it pops as the target.
     """
+    pal = NETWORK_THEMES.get(theme, NETWORK_THEMES["dark"])
     nodes = list(G.nodes())
 
     # --- edges: one muted line per edge, width ~ weight, no hover -----------
@@ -116,7 +126,7 @@ def _network_figure(G, metrics, pos, volume):
             y=[pos[u][1], pos[v][1]],
             mode="lines",
             line=dict(width=1 + 5 * wn ** 0.7,
-                      color=f"rgba(122,130,160,{0.20 + 0.45 * wn:.3f})"),
+                      color=f"rgba({pal['edge_rgb']},{0.20 + 0.45 * wn:.3f})"),
             hoverinfo="skip",
             showlegend=False,
         ))
@@ -168,19 +178,19 @@ def _network_figure(G, metrics, pos, volume):
         mode="markers+text",
         text=nodes_arr[is_other],
         textposition="bottom center",
-        textfont=dict(color=TEXT_PRI, size=10, family="DM Mono, monospace"),
+        textfont=dict(color=pal["text_pri"], size=10, family="DM Mono, monospace"),
         marker=dict(
             size=sizes[is_other],
             color=log_vol[is_other],
-            colorscale=VOLUME_SCALE,
-            line=dict(width=1.2, color=BORDER),
+            colorscale=pal["volume_scale"],
+            line=dict(width=1.2, color=pal["node_line"]),
             showscale=True,
             colorbar=dict(
-                title=dict(text="Crime<br>volume", font=dict(color=TEXT_SEC, size=11)),
+                title=dict(text="Crime<br>volume", font=dict(color=pal["text_sec"], size=11)),
                 thickness=10,
                 tickvals=tickvals,
                 ticktext=ticktext,
-                tickfont=dict(color=TEXT_SEC),
+                tickfont=dict(color=pal["text_sec"]),
             ),
         ),
         customdata=customdata[is_other],
@@ -197,11 +207,11 @@ def _network_figure(G, metrics, pos, volume):
             mode="markers+text",
             text=nodes_arr[is_target],
             textposition="bottom center",
-            textfont=dict(color=TARGET_COLOUR, size=10, family="DM Mono, monospace"),
+            textfont=dict(color=pal["target_colour"], size=10, family="DM Mono, monospace"),
             marker=dict(
                 size=sizes[is_target],
-                color=TARGET_COLOUR,
-                line=dict(width=1.2, color=BORDER),
+                color=pal["target_colour"],
+                line=dict(width=1.2, color=pal["node_line"]),
                 showscale=False,
             ),
             customdata=customdata[is_target],
@@ -215,8 +225,8 @@ def _network_figure(G, metrics, pos, volume):
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         margin=dict(l=0, r=0, t=0, b=0),
-        hoverlabel=dict(bgcolor=BG_CARD, bordercolor=BORDER,
-                        font=dict(color=TEXT_PRI, size=11)),
+        hoverlabel=dict(bgcolor=pal["bg_card"], bordercolor=pal["node_line"],
+                        font=dict(color=pal["text_pri"], size=11)),
         xaxis=dict(visible=False),
         yaxis=dict(visible=False),
     )
@@ -225,18 +235,24 @@ def _network_figure(G, metrics, pos, volume):
     return fig
 
 
-def _build_force_figure(con, where_sql=None):
-    """Build one brokerage-network figure for the slice selected by where_sql."""
+def _build_force_figures(con, where_sql=None):
+    """Build the brokerage graph once for a slice, then render it in every theme.
+
+    The graph/metrics/layout are theme-independent, so the heavy step runs once;
+    only the cheap plotly rendering repeats per theme. Returns {theme -> Figure}.
+    """
     G, metrics, _mean_ranks, pos = build_brokerage_graph(where_sql=where_sql, con=con)
     volume = _crime_volumes(con, where_sql)
-    return _network_figure(G, metrics, pos, volume)
+    return {theme: _network_figure(G, metrics, pos, volume, theme=theme)
+            for theme in NETWORK_THEMES}
 
 
 def make_network():
-    """Build one brokerage network per police force (+ a global "All forces" one)
-    and serialise them all to ``brokerage_networks.json`` for the dashboard.
+    """Build one brokerage network per police force (+ a global "All forces" one),
+    in every theme, and serialise them to ``brokerage_networks.json``.
 
-    Returns the {force -> Figure} dict (the saved file is {force -> plotly JSON}).
+    Returns {theme -> {force -> Figure}}; the saved file is {theme -> {force ->
+    plotly JSON}}, which the dashboard indexes by the active theme and force.
     """
     con = connect()
     forces = con.execute("""
@@ -245,18 +261,27 @@ def make_network():
         ORDER BY reported_by
     """).df()["reported_by"].tolist()
 
-    figures = {ALL_FORCES: _build_force_figure(con, where_sql=None)}
+    # figures_by_force: {force -> {theme -> Figure}}
+    figures_by_force = {ALL_FORCES: _build_force_figures(con, where_sql=None)}
     for force in forces:
         force_sql = force.replace("'", "''")  # SQL-escape single quotes
-        figures[force] = _build_force_figure(con, where_sql=f"reported_by = '{force_sql}'")
+        figures_by_force[force] = _build_force_figures(con, where_sql=f"reported_by = '{force_sql}'")
     con.close()
 
-    combined = {force: pio.to_json(fig) for force, fig in figures.items()}
+    # Pivot to {theme -> {force -> json}} (the shape the dashboard loads).
+    figures = {
+        theme: {force: per_theme[theme] for force, per_theme in figures_by_force.items()}
+        for theme in NETWORK_THEMES
+    }
+    combined = {
+        theme: {force: pio.to_json(fig) for force, fig in by_force.items()}
+        for theme, by_force in figures.items()
+    }
     out = DASHBOARD_ASSETS / "brokerage_networks.json"
     with open(out, "w", encoding="utf-8") as f:
         json.dump(combined, f)
-    print(f"brokerage_networks.json: {len(combined)} networks "
-          f"({ALL_FORCES} + {len(forces)} forces)")
+    print(f"brokerage_networks.json: {len(NETWORK_THEMES)} themes x "
+          f"({ALL_FORCES} + {len(forces)} forces) networks")
     return figures
 
 
