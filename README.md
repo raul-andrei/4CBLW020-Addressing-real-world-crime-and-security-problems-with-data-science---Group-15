@@ -104,7 +104,7 @@ over the 100 MB file limit), so it is shared separately.
 | `data/global_brokerage.csv` | Yes | models, dashboard | Per-crime-type brokerage scores |
 | `data/ward_brokerage_scores.parquet` | Yes | regression | Per-ward brokerage score per month |
 
-**Get `crimes.db`:** download it from the team OneDrive and place it at `data/crimes.db`:
+**Get `crimes.db`:** download it from the team OneDrive or DropBox and place it at `data/crimes.db`:
 
 > **OneDrive link (only people with a TUE email can access):** `https://tuenl-my.sharepoint.com/:u:/g/personal/j_f_i_m_couwenberg_student_tue_nl/IQArarnHKYPSR4APJCLOR-abAdbCRH1AD0jJVkZwfXe0UzI?e=t7crf5`
 
