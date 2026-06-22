@@ -104,7 +104,7 @@ over the 100 MB file limit), so it is shared separately.
 | `data/global_brokerage.csv` | Yes | models, dashboard | Per-crime-type brokerage scores |
 | `data/ward_brokerage_scores.parquet` | Yes | regression | Per-ward brokerage score per month |
 
-**Get `crimes.db`:** download it from the team OneDrive and place it at `data/crimes.db`:
+**Get `crimes.db`:** download it from the team OneDrive or DropBox and place it at `data/crimes.db`:
 
 > **OneDrive link (only people with a TUE email can access):** `https://tuenl-my.sharepoint.com/:u:/g/personal/j_f_i_m_couwenberg_student_tue_nl/IQArarnHKYPSR4APJCLOR-abAdbCRH1AD0jJVkZwfXe0UzI?e=t7crf5`
 
@@ -164,7 +164,7 @@ Tests whether per-ward brokerage predicts next-month violence (statsmodels GLM):
 ```bash
 python -m src.network_analysis.regressionAnalysis
 ```
-This prints the model summary. It reads `data/ward_brokerage_scores.parquet` (the per-ward brokerage-score table, committed to the repo) and `data/crimes.db`. To regenerate that table from scratch:
+This prints the model summary. It reads `data/ward_brokerage_scores.parquet` (the per-ward brokerage-score table, committed to the repo) and `data/crimes.db`. To regenerate that table from scratch - This is optional, only if it gives you an error that "ward_brokerage_scores" doesn't exist:
 ```bash
 python -c "from src.network_analysis.scores import calculate_average_betweenness as f; f(score_where_sql='year BETWEEN 2017 AND 2026').to_parquet('data/ward_brokerage_scores.parquet')"
 ```
@@ -180,7 +180,7 @@ python -m src.new_models_test.run_forecast
 ```
 Writes `predictions.csv`, per-ward errors, and a metric summary to `src/new_models_test/output/`.
 
-**Train + forecast next month** (this is what the dashboard's forecast map consumes):
+**Train + forecast next month** (this is what the dashboard's forecast map consumes) - This is used to RETRAIN the model, NOT needed to run the dashboard:
 ```bash
 python -m src.new_models_test.production_models           # train on all history + save
 python -m src.new_models_test.production_models predict    # forecast the next month
