@@ -1203,7 +1203,8 @@ def theme_toggle_label(theme):
     return "🌙  Dark mode" if theme == "light" else "☀  Light mode"
 
 
-# mirror the theme onto <body> so the CSS restyles (incl. the portaled dropdown menus)
+# Mirror the theme onto <body> so the CSS variables (and the dropdown menus that
+# Dash portals to <body>, outside the wrapper) switch palette.
 app.clientside_callback(
     """
     function(theme) {

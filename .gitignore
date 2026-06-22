@@ -12,6 +12,5 @@ data/lsoa_boundaries.geojson
 
 # Regenerable outputs / scratch
 src/output/
-src/new_models_test/output/
 network*.png
 .DS_Store
